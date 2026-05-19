@@ -108,7 +108,7 @@ all.config <- rbind(
     w0.val = -1, 
     bn.type = c(3), #, c(1, 2, 3), 
     outcome.type = c(1), 
-    var0.ess = c(1e-6, 1e-4, 1e-2, 0.1, 0.5, 1),
+    var0.ess = c(1e-10, 1e-6, 1e-4, 1e-2, 0.1, 0.5, 1),
     prior.shrinkage = "dt(0, 5^(-2), 1)T(0,)",
     seed.pre = c(2344, 4566)# c(1233, 2344, 3455, 4566, 5677)
   )
