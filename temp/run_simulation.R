@@ -323,8 +323,14 @@ results.all <- cbind(results.all, NA, results)
 
 
 ### Output Results ===========
-opt.para <- cbind(Power.min = PowerMin, SR.min = SRMin, opt.para)
-results.all <- cbind(Power.min = PowerMin, SR.min = SRMin, results.all)
+opt.para <- cbind(
+  Cs2 = Cs2, cutoff.step = cutoff.step, 
+  Power.min = PowerMin, SR.min = SRMin, opt.para
+  )
+results.all <- cbind(
+  Cs2 = Cs2, cutoff.step = cutoff.step, 
+  Power.min = PowerMin, SR.min = SRMin, results.all
+  )
 
 parapath <- "./results/output_OptPara.csv"
 resultspath <- "./results/output_OC.csv"
