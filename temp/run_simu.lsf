@@ -1,0 +1,36 @@
+#!/bin/bash
+#BSUB -J "BOP2-Comb[1-72]"
+#BSUB -W 3:00
+#BSUB -o /rsrch4/scratch/biostatistics/xchi/comb2/%J_%I.out
+#BSUB -e /rsrch4/scratch/biostatistics/xchi/comb2/%J_%I.err
+#BSUB -cwd /rsrch4/home/biostatistics/xchi/comb2/calibration_sensitivity/
+#BSUB -q short 
+#BSUB -n 12
+#BSUB -M 5
+#BSUB -R rusage[mem=5]
+#BSUB -N
+#BSUB -u xchi@mdanderson.org
+
+
+module load miniconda3/py39_4.12.0
+eval "$(/risapps/rhel8/miniconda3/py39_4.12.0/bin/conda shell.bash hook)"
+source activate xchi
+module load R/4.3.1
+
+
+echo "LSB_JOBID: " $LSB_JOBID
+echo "LSB_BATCH_JID: " $LSB_BATCH_JID
+echo "LSB_JOBINDEX: " $LSB_JOBINDEX
+
+
+
+cp run_simulation.R run_simulation_tmp${LSB_JOBINDEX}.R
+
+find . -name "run_simulation_tmp${LSB_JOBINDEX}.R" -print0 | xargs -0 perl -pi -e "s/idx00/${LSB_JOBINDEX}/g"
+
+Rscript run_simulation_tmp${LSB_JOBINDEX}.R
+
+rm run_simulation_tmp${LSB_JOBINDEX}.R
+
+
+
