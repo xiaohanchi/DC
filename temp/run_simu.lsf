@@ -5,11 +5,11 @@
 #BSUB -e /rsrch4/scratch/biostatistics/xchi/comb2/%J_%I.err
 #BSUB -cwd /rsrch4/home/biostatistics/xchi/comb2/calibration_sensitivity/
 #BSUB -q short 
-#BSUB -n 12
-#BSUB -M 5
-#BSUB -R rusage[mem=5]
+#BSUB -n 15
+#BSUB -M 10
+#BSUB -R rusage[mem=10]
 #BSUB -N
-#BSUB -u xchi@mdanderson.org
+# #BSUB -u xchi@mdanderson.org
 
 
 module load miniforge3
