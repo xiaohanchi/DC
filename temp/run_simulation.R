@@ -173,7 +173,7 @@ results.all <- cbind(results.all, NA, results)
 #### upfront = FALSE ==========
 
 ##### case 1 ========
-Cs2 = 0.95
+
 calibration.res <- all.search(
   n.stage1.lower = 6, n.stage1.upper = 40,
   n.stage2.lower = 2, n.stage2.upper = 40, step = 1,
