@@ -12,8 +12,7 @@
 #BSUB -u xchi@mdanderson.org
 
 
-module load miniconda3/py39_4.12.0
-eval "$(/risapps/rhel8/miniconda3/py39_4.12.0/bin/conda shell.bash hook)"
+module load miniforge3
 source activate xchi
 module load R/4.3.1
 
