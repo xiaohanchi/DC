@@ -540,7 +540,8 @@ run_oneshotFP <- function(data,
       if (i == target_site) X_target <- X_df_i[, -1]
       p_coef <- ncol(X_df_i)
       beta_init <- glm.fit(X_df_i, prep$y, family = binomial())$coef
-      beta_init[is.na(beta_init)] <- 0
+      beta_init[!is.finite(beta_init)] <- 0
+      if (max(abs(beta_init)) > 25) beta_init <- rep(0, p_coef)
       fit <- optim(
         par = beta_init,
         function(b) {
