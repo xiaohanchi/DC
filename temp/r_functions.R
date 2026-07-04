@@ -629,18 +629,18 @@ run_oneshotFP <- function(data,
         )
         theta_samples <- as.matrix(as.mcmc.list(jagsmodel, c("theta", "phat_ctrl", "phat_trt")))
         colnames(theta_samples) <- c(ord, "p_ctrl", "p_trt")
+        ord_beta <- ord
         ATE.mcmc <- theta_samples[, "p_trt"] - theta_samples[, "p_ctrl"]
 
 
         result <- list(
           ATE = mean(ATE.mcmc),
           prob = 2 * min(mean(ATE.mcmc < 0), mean(ATE.mcmc > 0)),
-          beta = colMeans(theta_samples[, , drop = FALSE]),
+          beta = setNames(colMeans(theta_samples[, ord_beta, drop = FALSE]), ord_beta),
           cov = cov(theta_samples[, ord_beta, drop = FALSE]),
           Hess = hess_post,
           Lambda_global = Lambda_glb_hetero[ord, ord],
-          Sigma_0 = Sigma_0,
-          sigma2 = exp(median(theta_samples[, "sigma2"]))
+          Sigma_0 = Sigma_0
         )
       }
     }
