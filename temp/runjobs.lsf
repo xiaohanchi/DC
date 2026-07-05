@@ -1,9 +1,9 @@
 #!/bin/bash
-#BSUB -J "FedPlat_idx00[1-50]"
+#BSUB -J "FPcont_idx00[1-500]"
 #BSUB -W 3:00
 #BSUB -o /rsrch4/scratch/biostatistics/xchi/fed_platform/%J_%I.out
 #BSUB -e /rsrch4/scratch/biostatistics/xchi/fed_platform/%J_%I.err
-#BSUB -cwd /rsrch4/home/biostatistics/xchi/fed_platform/experiment/folder00
+#BSUB -cwd /rsrch4/home/biostatistics/xchi/fed_platform/experiment/main_continuous/folder00
 #BSUB -q short 
 #BSUB -n 1 
 #BSUB -M 5

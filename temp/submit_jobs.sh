@@ -1,6 +1,6 @@
 #!/bin/bash
 
-n_jobs=216
+n_jobs=72
 # my_array=(15 16 18 19 223 224 226 227)
 
 # for i in "${my_array[@]}"; do

@@ -13,6 +13,28 @@ source("../r_functions.R")
  
 ### RUN code ==========================
 source("../scenarios.R")
+all_config <- rbind(
+  # continuous y
+  # 4 sites w/ 6 periods
+  expand.grid(
+    y_type = 1,
+    n_sc = c(1:2),
+    beta_trt = c(0, 0.6), 
+    site_delta_sc = c(1:3),
+    drift_sc = c(1:3),
+    active_time_sc = c(1)
+  ),
+  # 6 sites w/ 10 periods
+  expand.grid(
+    y_type = 1,
+    n_sc = c(4:5), 
+    beta_trt = c(0, 0.5), 
+    site_delta_sc = c(4:6),
+    drift_sc = c(4:6),
+    active_time_sc = c(2)
+  )
+)
+
 scenario <- list(
   beta0 = -1,
   beta = c(0.5, 0.3, -0.2),
@@ -27,7 +49,7 @@ scenario <- list(
 
 output <- main_func(
   pars = scenario, type = all_config$y_type[sc00], 
-  n_simu = 100, seed0 = seed00, rep = rep00
+  n_simu = 10, seed0 = seed00, rep = rep00
   )
 
 all_res <- list(

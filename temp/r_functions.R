@@ -118,7 +118,27 @@ run_complete <- function(data, n_site, target_site) {
       X_target = X_target
     )
   }
-
+  fit_glm <- tryCatch(
+    glm(Y ~ trt_group + X1 + X2 + X3 + factor(site) + factor(temporal_ind),
+        data = data, family = if (y_type == 1) gaussian() else binomial()),
+                      error = function(e) NULL)
+  inits <- lapply(c(223, 323, 423, 523), function(s) {
+    if (is.null(fit_glm)) return(list(.RNG.name = "base::Mersenne-Twister", .RNG.seed = s))
+    cf <- coef(fit_glm)
+    cf[!is.finite(cf)] <- 0
+    delta <- rep(0, n_site)
+    for (nm in grep("^factor\\(site\\)", names(cf), value = TRUE))
+      delta[as.integer(sub("factor\\(site\\)", "", nm))] <- cf[nm]
+    delta[target_site] <- 0
+    out <- list(
+      beta0 = unname(cf["(Intercept)"]),
+      theta = replace(unname(cf[colnames(X_mat)]), is.na(cf[colnames(X_mat)]), 0),
+                delta = delta, sd_alpha = 0.5, lambda = rep(1, n_site), tau = 1,
+                .RNG.name = "base::Mersenne-Twister", .RNG.seed = s
+      )
+    if (y_type == 1) out$log_sigma2 <- log(max(fit_glm$sigma^2, 1e-6))
+    out
+  })
 
   jagsmodel <- run.jags(
     model = if (y_type == 1) complete_continuous else complete_binary,
@@ -126,7 +146,7 @@ run_complete <- function(data, n_site, target_site) {
     data = jagsdata, n.chains = 4,
     adapt = 1000, burnin = 4000, sample = 5000, summarise = FALSE, thin = 2,
     method = "rjags", plots = FALSE, silent.jags = T,
-    inits = lapply((c(1:4) * 100 + 123), function(s) list(.RNG.name = "base::Mersenne-Twister", .RNG.seed = s))
+    inits = inits
   )
 
   if(y_type == 1) {
