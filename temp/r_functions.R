@@ -245,7 +245,7 @@ run_BFI <- function(data, n_site, target_site, lambda_loc = 0.0001, lambda_glb =
     w <- p_est$trt * (1 - p_est$trt) - p_est$ctrl * (1 - p_est$ctrl)
     nm <- c(intercept_col, "trt_group", beta_cols)
     g <- c(
-      mean(p_est$trt * (1 - p_est$trt)), mean(w), colMeans(w * X_target)
+      mean(w), mean(p_est$trt * (1 - p_est$trt)), colMeans(w * X_target)
       )
     fit$prob <- 2 * (1 - pnorm(abs(fit$ATE / sqrt(c(t(g) %*% solve(fit$A_hat)[nm, nm] %*% g)))))
   }
