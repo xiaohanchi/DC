@@ -10,27 +10,27 @@ source("../jags_function.R")
 source("../r_functions.R")
 
 
- 
+
 ### RUN code ==========================
 source("../scenarios.R")
 all_config <- rbind(
-  # continuous y
+  # binary y
   # 4 sites w/ 6 periods
   expand.grid(
-    y_type = 1,
-    n_sc = c(1:2),
-    beta_trt = c(0, 0.6), 
-    site_delta_sc = c(1:3),
-    drift_sc = c(1:3),
+    y_type = 2,
+    n_sc = c(7:8),
+    beta_trt = c(0, 0.8), 
+    site_delta_sc = c(7:9),
+    drift_sc = c(7:9),
     active_time_sc = c(1)
   ),
   # 6 sites w/ 10 periods
   expand.grid(
-    y_type = 1,
-    n_sc = c(4:5), 
-    beta_trt = c(0, 0.5), 
-    site_delta_sc = c(4:6),
-    drift_sc = c(4:6),
+    y_type = 2,
+    n_sc = c(10:11), 
+    beta_trt = c(0, 0.8), 
+    site_delta_sc = c(10:12),
+    drift_sc = c(10:12),
     active_time_sc = c(2)
   )
 )
@@ -47,10 +47,12 @@ scenario <- list(
   drift = drift_mat[[all_config$drift_sc[sc00]]]
 )
 
+
 output <- main_func(
   pars = scenario, type = all_config$y_type[sc00], 
   n_simu = 10, seed0 = seed00, rep = rep00
   )
+
 
 all_res <- list(
   oneshotFP = output$beta_mat_FP,
