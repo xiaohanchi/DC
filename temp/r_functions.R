@@ -26,7 +26,16 @@ generate_data <- function(scenario = NULL, type = 1, seed = 233) {
   data_list <- lapply(seq_len(n_site), function(kk) {
     n_k <- n_ctrl[kk] + n_trt[kk]
     trt_group <- c(rep(0, n_ctrl[kk]), rep(1, n_trt[kk])) %>% sample()
-    temporal_ind <- rep(tp <- c(pars$active_time[[paste0("site", kk)]]), length.out = n_k) %>% sample()
+    ctrl_key <- paste0("site", kk, "_ctrl")
+    trt_key <- paste0("site", kk, "_trt")
+    temporal_ind <- if (ctrl_key %in% names(pars$active_time)) {
+      tp <- rep(NA_integer_, n_k)
+      tp[trt_group == 0] <- sample(rep(pars$active_time[[ctrl_key]], length.out = n_ctrl[kk]))
+      tp[trt_group == 1] <- sample(rep(pars$active_time[[trt_key]], length.out = n_trt[kk]))
+      tp
+    } else {
+      rep(pars$active_time[[paste0("site", kk)]], length.out = n_k) %>% sample()
+    }
     X1 <- rnorm(n_k, mean = 0, sd = 2)
     X2 <- rnorm(n_k, mean = 2, sd = 3)
     X3 <- rbinom(n_k, size = 1, prob = 0.5)
@@ -81,13 +90,104 @@ run_MAP <- function(data, target_site, lambda = 0.0001, type) {
   return(fit)
 }
 
+run_TM <- function(data, target_site = NULL) {
+
+  y_type <- if (all(data$Y %in% c(0, 1))) 2 else 1
+  X_mat <- data %>%
+    select(-c(site, temporal_ind, Y)) %>%
+    as.matrix()
+  target_dat <- if (!is.null(target_site)) filter(data, site == target_site) else data
+  X_target <- target_dat %>%
+    filter(temporal_ind %in% intersect(temporal_ind[trt_group == 0], temporal_ind[trt_group == 1])) %>%
+    select(-c(site, temporal_ind, Y)) %>%
+    as.matrix()
+
+  if (y_type == 1) {
+    jagsdata <- list(
+      N = nrow(data),
+      y = data$Y,
+      Nperiod = max(data$temporal_ind),
+      X = X_mat,
+      time = data$temporal_ind,
+      beta_p = ncol(X_mat)
+    )
+  } else {
+    jagsdata <- list(
+      N = nrow(data),
+      y = data$Y,
+      Nperiod = max(data$temporal_ind),
+      X = X_mat,
+      time = data$temporal_ind,
+      beta_p = ncol(X_mat),
+      N_target = nrow(X_target),
+      X_target = X_target
+    )
+  }
+  data_glm <- data %>% select(-c(site))
+  fit_glm <- tryCatch(
+    glm(Y ~ .,
+        data = transform(data_glm, temporal_ind = factor(temporal_ind)),
+        family = if (y_type == 1) gaussian() else binomial()
+    ),
+    error = function(e) NULL
+  )
+  inits <- lapply(c(223, 323, 423, 523), function(s) {
+    if (is.null(fit_glm)) {
+      return(list(.RNG.name = "base::Mersenne-Twister", .RNG.seed = s))
+    }
+    cf <- coef(fit_glm)
+    cf[!is.finite(cf)] <- 0
+    out <- list(
+      beta0 = unname(cf["(Intercept)"]),
+      theta = replace(unname(cf[colnames(X_mat)]), is.na(cf[colnames(X_mat)]), 0),
+      sd_alpha = 0.5,
+      .RNG.name = "base::Mersenne-Twister", .RNG.seed = s
+    )
+    if (y_type == 1) out$log_sigma2 <- log(max(fit_glm$sigma^2, 1e-6))
+    out
+  })
+
+  jagsmodel <- run.jags(
+    model = if (y_type == 1) TM_continuous else TM_binary,
+    monitor = if (y_type == 1) c("beta0", "theta", "prec_y") else c("beta0", "theta", "phat_ctrl", "phat_trt"),
+    data = jagsdata, n.chains = 4,
+    adapt = 1000, burnin = 4000, sample = 5000, summarise = FALSE, thin = 2,
+    method = "rjags", plots = FALSE, silent.jags = T,
+    inits = inits
+  )
+
+  if (y_type == 1) {
+    theta_samples <- as.matrix(as.mcmc.list(jagsmodel, c("beta0", "theta", "prec_y")))
+    colnames(theta_samples) <- c("beta0", colnames(X_mat), "prec_y")
+    ATE.mcmc <- theta_samples[, "trt_group"]
+  } else {
+    theta_samples <- as.matrix(as.mcmc.list(jagsmodel, c("beta0", "theta", "phat_ctrl", "phat_trt")))
+    colnames(theta_samples) <- c("beta0", colnames(X_mat), "p_ctrl", "p_trt")
+    ATE.mcmc <- theta_samples[, "p_trt"] - theta_samples[, "p_ctrl"]
+  }
+
+  list(
+    ATE = mean(ATE.mcmc),
+    prob = 2 * min(mean(ATE.mcmc < 0), mean(ATE.mcmc > 0)),
+    beta = colMeans(theta_samples[, 1:(1 + ncol(X_mat))]),
+    cov = cov(theta_samples[, 1:(1 + ncol(X_mat)), drop = FALSE]),
+    sigma2 = if (y_type == 1) 1 / (median(theta_samples[, "prec_y"])) else NULL
+  )
+}
+
+run_localTM <- function(data) run_TM(data)
+run_poolTM <- function(data, target_site) run_TM(data, target_site = target_site)
+
+
 run_complete <- function(data, n_site, target_site) {
+
   y_type <- if (all(data$Y %in% c(0, 1))) 2 else 1
   X_mat <- data %>%
     select(-c(site, temporal_ind, Y)) %>%
     as.matrix()
   X_target <- data %>%
     filter(site == target_site) %>%
+    filter(temporal_ind %in% intersect(temporal_ind[trt_group == 0], temporal_ind[trt_group == 1])) %>%
     select(-c(site, temporal_ind, Y)) %>%
     as.matrix()
 
@@ -119,23 +219,29 @@ run_complete <- function(data, n_site, target_site) {
     )
   }
   fit_glm <- tryCatch(
-    glm(Y ~ trt_group + X1 + X2 + X3 + factor(site) + factor(temporal_ind),
-        data = data, family = if (y_type == 1) gaussian() else binomial()),
-                      error = function(e) NULL)
+    glm(Y ~ .,
+      data = transform(data, site = factor(site), temporal_ind = factor(temporal_ind)),
+      family = if (y_type == 1) gaussian() else binomial()
+    ),
+    error = function(e) NULL
+  )
   inits <- lapply(c(223, 323, 423, 523), function(s) {
-    if (is.null(fit_glm)) return(list(.RNG.name = "base::Mersenne-Twister", .RNG.seed = s))
+    if (is.null(fit_glm)) {
+      return(list(.RNG.name = "base::Mersenne-Twister", .RNG.seed = s))
+    }
     cf <- coef(fit_glm)
     cf[!is.finite(cf)] <- 0
     delta <- rep(0, n_site)
-    for (nm in grep("^factor\\(site\\)", names(cf), value = TRUE))
-      delta[as.integer(sub("factor\\(site\\)", "", nm))] <- cf[nm]
+    for (nm in grep("^site\\d", names(cf), value = TRUE)) {
+      delta[as.integer(sub("^site", "", nm))] <- cf[nm]
+    }
     delta[target_site] <- 0
     out <- list(
       beta0 = unname(cf["(Intercept)"]),
       theta = replace(unname(cf[colnames(X_mat)]), is.na(cf[colnames(X_mat)]), 0),
-                delta = delta, sd_alpha = 0.5, lambda = rep(1, n_site), tau = 1,
-                .RNG.name = "base::Mersenne-Twister", .RNG.seed = s
-      )
+      delta = delta, sd_alpha = 0.5, lambda = rep(1, n_site), tau = 1,
+      .RNG.name = "base::Mersenne-Twister", .RNG.seed = s
+    )
     if (y_type == 1) out$log_sigma2 <- log(max(fit_glm$sigma^2, 1e-6))
     out
   })
@@ -149,7 +255,7 @@ run_complete <- function(data, n_site, target_site) {
     inits = inits
   )
 
-  if(y_type == 1) {
+  if (y_type == 1) {
     theta_samples <- as.matrix(as.mcmc.list(jagsmodel, c("beta0", "theta", "prec_y")))
     colnames(theta_samples) <- c("beta0", colnames(X_mat), "prec_y")
     ATE.mcmc <- theta_samples[, "trt_group"]
@@ -158,12 +264,12 @@ run_complete <- function(data, n_site, target_site) {
     colnames(theta_samples) <- c("beta0", colnames(X_mat), "p_ctrl", "p_trt")
     ATE.mcmc <- theta_samples[, "p_trt"] - theta_samples[, "p_ctrl"]
   }
-  
+
   result <- list(
     ATE = mean(ATE.mcmc),
     prob = 2 * min(mean(ATE.mcmc < 0), mean(ATE.mcmc > 0)),
-    beta = colMeans(theta_samples[,1:(1+ncol(X_mat))]),
-    cov = cov(theta_samples[, 1:(1+ncol(X_mat)), drop = FALSE]),
+    beta = colMeans(theta_samples[, 1:(1 + ncol(X_mat))]),
+    cov = cov(theta_samples[, 1:(1 + ncol(X_mat)), drop = FALSE]),
     sigma2 = if (y_type == 1) 1 / (median(theta_samples[, "prec_y"])) else NULL
   )
   result
@@ -235,8 +341,11 @@ run_BFI <- function(data, n_site, target_site, lambda_loc = 0.0001, lambda_glb =
     fit$ATE <- unname(est["trt_group"])
     fit$prob <- 2 * (1 - pnorm(abs(fit$ATE / fit$sd["trt_group"])))
   } else if (family == "binomial") {
-    beta_cols <- setdiff(names(Ms[[target_site]]), c("Y", "trt_group")) 
-    X_target <- as.matrix(Ms[[target_site]][, beta_cols, drop = FALSE])
+    beta_cols <- setdiff(names(Ms[[target_site]]), c("Y", "trt_group"))
+    target_dat <- data %>%
+      filter(site == target_site) %>%
+      filter(temporal_ind %in% intersect(temporal_ind[trt_group == 0], temporal_ind[trt_group == 1]))
+    X_target <- as.matrix(target_dat[, beta_cols, drop = FALSE])
     intercept_col <- if (homo) "(Intercept)" else paste0("(Intercept)_loc", target_site)
     eta <- as.numeric(est[intercept_col] + X_target %*% est[beta_cols])
     p_est <- list(ctrl = expit(eta), trt = expit(eta + est["trt_group"]))
@@ -246,10 +355,10 @@ run_BFI <- function(data, n_site, target_site, lambda_loc = 0.0001, lambda_glb =
     nm <- c(intercept_col, "trt_group", beta_cols)
     g <- c(
       mean(w), mean(p_est$trt * (1 - p_est$trt)), colMeans(w * X_target)
-      )
+    )
     fit$prob <- 2 * (1 - pnorm(abs(fit$ATE / sqrt(c(t(g) %*% solve(fit$A_hat)[nm, nm] %*% g)))))
   }
-  
+
   fit
 }
 
@@ -457,7 +566,7 @@ run_oneshotFP <- function(data,
     if (homo) {
       Hess_global <- Reduce(`+`, Hess_local)
       eta_post <- Reduce(`+`, eta_local)
-      hess_post <- Hess_global - Lambda_global + n_site * Lambda_loc[[1]]
+      hess_post <- Hess_global - Lambda_global + n_site * Lambda_loc
       beta_map <- solve(hess_post, eta_post)
       sigma2_map <- exp(beta_map[length(beta_map), 1])
 
@@ -489,55 +598,42 @@ run_oneshotFP <- function(data,
       beta_map <- solve(hess_post, eta_post)
       sigma2_map <- exp(beta_map["sigma2"])
 
-      if (no_borrow) {
-        # hetero, no borrow, no time trend modeling
-        result <- list(
-          beta = setNames(as.vector(beta_map), ord)[-which(ord == "sigma2")],
-          cov = solve(-hess_post),
-          Hess = hess_post,
-          Lambda_global = Lambda_glb_hetero[ord, ord],
-          Sigma_0 = Sigma_0,
-          sigma2 = sigma2_map
-        )
-      } else {
-        # hetero, borrow, time trend modeling
-        jagsdata <- list(
-          Nperiod = Nperiod,
-          beta_p = length(shared[!grepl("^temporal_ind_", shared)]) - 1,
-          shared_p = length(shared) - 1,
-          n_site = n_site,
-          target_site = target_site,
-          n_p = length(beta_map),
-          y_laplace = as.numeric(beta_map),
-          invSigma = -(hess_post + Lambda_glb_hetero[ord, ord])
-        )
+      jagsdata <- list(
+        Nperiod = Nperiod,
+        beta_p = length(shared[!grepl("^temporal_ind_", shared)]) - 1,
+        shared_p = length(shared) - 1,
+        n_site = n_site,
+        target_site = target_site,
+        n_p = length(beta_map),
+        y_laplace = as.numeric(beta_map),
+        invSigma = -(hess_post + Lambda_glb_hetero[ord, ord])
+      )
 
-        jagsmodel <- run.jags(
-          model = FP_continuous,
-          monitor = c("theta", "delta"),
-          data = jagsdata, n.chains = 4,
-          adapt = 1000, burnin = 4000, sample = 5000, summarise = FALSE, thin = 2,
-          method = "rjags", plots = FALSE, silent.jags = T,
-          inits = lapply((c(1:4) * 100 + 123), function(s) list(.RNG.name = "base::Mersenne-Twister", .RNG.seed = s))
-        )
-        theta_samples <- as.matrix(as.mcmc.list(jagsmodel, "theta"))
-        colnames(theta_samples) <- ord
-        ord_beta <- ord[ord != "sigma2"]
+      # no_borrow: hetero, no borrow, time trend modeling; 
+      # otherwise: hetero, borrow, time trend modeling
+      jagsmodel <- run.jags(
+        model = if (no_borrow) FP_hetero_continuous else FP_continuous,
+        monitor = if (no_borrow) c("theta", "beta0_loc") else c("theta", "delta"),
+        data = jagsdata, n.chains = 4,
+        adapt = 1000, burnin = 4000, sample = 5000, summarise = FALSE, thin = 2,
+        method = "rjags", plots = FALSE, silent.jags = T,
+        inits = lapply((c(1:4) * 100 + 123), function(s) list(.RNG.name = "base::Mersenne-Twister", .RNG.seed = s))
+      )
+      theta_samples <- as.matrix(as.mcmc.list(jagsmodel, "theta"))
+      colnames(theta_samples) <- ord
+      ord_beta <- ord[ord != "sigma2"]
+      ATE.mcmc <- theta_samples[, "trt_group"]
 
-        ATE.mcmc <- theta_samples[, "trt_group"]
-
-
-        result <- list(
-          ATE = mean(ATE.mcmc),
-          prob = 2 * min(mean(ATE.mcmc < 0), mean(ATE.mcmc > 0)),
-          beta = setNames(colMeans(theta_samples[, ord_beta, drop = FALSE]), ord_beta),
-          cov = cov(theta_samples[, ord_beta, drop = FALSE]),
-          Hess = hess_post,
-          Lambda_global = Lambda_glb_hetero[ord, ord],
-          Sigma_0 = Sigma_0,
-          sigma2 = exp(median(theta_samples[, "sigma2"]))
-        )
-      }
+      result <- list(
+        ATE = mean(ATE.mcmc),
+        prob = 2 * min(mean(ATE.mcmc < 0), mean(ATE.mcmc > 0)),
+        beta = setNames(colMeans(theta_samples[, ord_beta, drop = FALSE]), ord_beta),
+        cov = cov(theta_samples[, ord_beta, drop = FALSE]),
+        Hess = hess_post,
+        Lambda_global = Lambda_glb_hetero[ord, ord],
+        Sigma_0 = Sigma_0,
+        sigma2 = exp(median(theta_samples[, "sigma2"]))
+      )
     }
   } else if (y_type == 2) {
     Hess_aa <- Hess_ab <- Hess_bb <- Hess_local <- eta_local <- vector("list", n_site)
@@ -557,7 +653,10 @@ run_oneshotFP <- function(data,
         X_df_i <- prep$X
       }
 
-      if (i == target_site) X_target <- X_df_i[, -1]
+      if (i == target_site) {
+        site_dat <- data[data[[site_col]] == i, ]
+        X_target <- X_df_i[site_dat$temporal_ind %in% intersect(site_dat$temporal_ind[site_dat$trt_group == 0], site_dat$temporal_ind[site_dat$trt_group == 1]), -1, drop = FALSE]
+      }
       p_coef <- ncol(X_df_i)
       beta_init <- glm.fit(X_df_i, prep$y, family = binomial())$coef
       beta_init[!is.finite(beta_init)] <- 0
@@ -617,53 +716,43 @@ run_oneshotFP <- function(data,
 
       beta_map <- solve(hess_post, eta_post)
 
-      if (no_borrow) {
-        result <- list(
-          beta = setNames(as.vector(beta_map), ord),
-          cov = solve(-hess_post),
-          Hess = hess_post,
-          Lambda_global = Lambda_glb_hetero[ord, ord],
-          Sigma_0 = Sigma_0
-        )
-      } else {
-        # hetero, borrow, time trend modeling
-        jagsdata <- list(
-          Nperiod = Nperiod,
-          beta_p = length(shared[!grepl("^temporal_ind_", shared)]),
-          shared_p = length(shared),
-          n_site = n_site,
-          target_site = target_site,
-          n_p = length(beta_map),
-          y_laplace = as.numeric(beta_map),
-          N_target = nrow(X_target),
-          X_target = X_target,
-          invSigma = -(hess_post + Lambda_glb_hetero[ord, ord])
-        )
+      jagsdata <- list(
+        Nperiod = Nperiod,
+        beta_p = length(shared[!grepl("^temporal_ind_", shared)]),
+        shared_p = length(shared),
+        n_site = n_site,
+        target_site = target_site,
+        n_p = length(beta_map),
+        y_laplace = as.numeric(beta_map),
+        N_target = nrow(X_target),
+        X_target = X_target,
+        invSigma = -(hess_post + Lambda_glb_hetero[ord, ord])
+      )
 
-        jagsmodel <- run.jags(
-          model = FP_binary,
-          monitor = c("theta", "phat_ctrl", "phat_trt"),
-          data = jagsdata, n.chains = 4,
-          adapt = 1000, burnin = 4000, sample = 5000, summarise = FALSE, thin = 2,
-          method = "rjags", plots = FALSE, silent.jags = T,
-          inits = lapply((c(1:4) * 100 + 123), function(s) list(.RNG.name = "base::Mersenne-Twister", .RNG.seed = s))
-        )
-        theta_samples <- as.matrix(as.mcmc.list(jagsmodel, c("theta", "phat_ctrl", "phat_trt")))
-        colnames(theta_samples) <- c(ord, "p_ctrl", "p_trt")
-        ord_beta <- ord
-        ATE.mcmc <- theta_samples[, "p_trt"] - theta_samples[, "p_ctrl"]
+      # no_borrow: hetero, no borrow, time trend modeling;
+      # otherwise: hetero, borrow, time trend modeling
+      jagsmodel <- run.jags(
+        model = if (no_borrow) FP_hetero_binary else FP_binary,
+        monitor = if (no_borrow) c("theta", "beta0_loc", "phat_ctrl", "phat_trt") else c("theta", "delta", "phat_ctrl", "phat_trt"),
+        data = jagsdata, n.chains = 4,
+        adapt = 1000, burnin = 4000, sample = 5000, summarise = FALSE, thin = 2,
+        method = "rjags", plots = FALSE, silent.jags = T,
+        inits = lapply((c(1:4) * 100 + 123), function(s) list(.RNG.name = "base::Mersenne-Twister", .RNG.seed = s))
+      )
+      theta_samples <- as.matrix(as.mcmc.list(jagsmodel, c("theta", "phat_ctrl", "phat_trt")))
+      colnames(theta_samples) <- c(ord, "p_ctrl", "p_trt")
+      ord_beta <- ord
+      ATE.mcmc <- theta_samples[, "p_trt"] - theta_samples[, "p_ctrl"]
 
-
-        result <- list(
-          ATE = mean(ATE.mcmc),
-          prob = 2 * min(mean(ATE.mcmc < 0), mean(ATE.mcmc > 0)),
-          beta = setNames(colMeans(theta_samples[, ord_beta, drop = FALSE]), ord_beta),
-          cov = cov(theta_samples[, ord_beta, drop = FALSE]),
-          Hess = hess_post,
-          Lambda_global = Lambda_glb_hetero[ord, ord],
-          Sigma_0 = Sigma_0
-        )
-      }
+      result <- list(
+        ATE = mean(ATE.mcmc),
+        prob = 2 * min(mean(ATE.mcmc < 0), mean(ATE.mcmc > 0)),
+        beta = setNames(colMeans(theta_samples[, ord_beta, drop = FALSE]), ord_beta),
+        cov = cov(theta_samples[, ord_beta, drop = FALSE]),
+        Hess = hess_post,
+        Lambda_global = Lambda_glb_hetero[ord, ord],
+        Sigma_0 = Sigma_0
+      )
     }
   }
 
@@ -677,7 +766,7 @@ main_func <- function(
   lambda = 0.0001,
   n_simu = 1000,
   seed0 = 233,
-  rep = 1, 
+  rep = 1,
   verbose = TRUE
 ) {
   # type: = 1 for continuous outcome and = 2 for binary outcome
@@ -687,74 +776,124 @@ main_func <- function(
   target_site <- which(pars$n_trt_by_site > 0)
   beta0_true <- pars$beta0 + pars$site_delta[target_site]
 
+  x_names <- if (is.null(names(pars$beta))) {
+    paste0("X", seq_along(pars$beta))
+  } else {
+    names(pars$beta)
+  }
   true_beta <- c(
     `(Intercept)` = beta0_true,
     trt_group = pars$beta_trt,
-    X1 = pars$beta[1],
-    X2 = pars$beta[2],
-    X3 = pars$beta[3]
+    setNames(pars$beta, x_names)
   )
   coef_names <- names(true_beta)
+  shared_coef_names <- setdiff(coef_names, "(Intercept)")
   n_coef <- length(coef_names)
   col_names <- c(coef_names, "ATE", "prob")
 
-  beta_mat_FP <- beta_mat_BFI <- beta_mat_comb <- beta_mat_local <- beta_mat_complete <- matrix(NA_real_, nrow = n_simu, ncol = length(col_names))
-  colnames(beta_mat_FP) <- colnames(beta_mat_BFI) <- colnames(beta_mat_comb) <- colnames(beta_mat_local) <- colnames(beta_mat_complete) <- col_names
+  fill_hetero_beta <- function(mat, row, beta_vec) {
+    mat[row, "(Intercept)"] <- beta_vec[paste0("(Intercept)_loc", target_site)]
+    mat[row, shared_coef_names] <- beta_vec[shared_coef_names]
+    mat
+  }
+  fill_pooled_beta <- function(mat, row, beta_vec) {
+    mat[row, "(Intercept)"] <- beta_vec["beta0"]
+    mat[row, shared_coef_names] <- beta_vec[shared_coef_names]
+    mat
+  }
+  glm_to_hetero_beta <- function(fit, site_levels) {
+    cf <- coef(fit)
+    beta_vec <- cf[shared_coef_names]
+    beta_vec[paste0("(Intercept)_loc", site_levels[1])] <- unname(cf["(Intercept)"])
+    for (k in site_levels[-1]) {
+      beta_vec[paste0("(Intercept)_loc", k)] <- unname(cf["(Intercept)"] + cf[paste0("site", k)])
+    }
+    beta_vec
+  }
+
+  beta_mat_FP <- beta_mat_FP_noBorrow <- beta_mat_BFI <- beta_mat_BFI_comp <- beta_mat_pool <- beta_mat_local <- beta_mat_localTM <- beta_mat_poolTM <- beta_mat_complete <- matrix(NA_real_, nrow = n_simu, ncol = length(col_names))
+  colnames(beta_mat_FP) <- colnames(beta_mat_FP_noBorrow) <- colnames(beta_mat_BFI) <- colnames(beta_mat_BFI_comp) <- colnames(beta_mat_pool) <- colnames(beta_mat_local) <- colnames(beta_mat_localTM) <- colnames(beta_mat_poolTM) <- colnames(beta_mat_complete) <- col_names
 
   for (r in seq_len(n_simu)) {
-    if (verbose && r %% (n_simu/10) == 0) message("Replicate ", r, " / ", n_simu)
+    if (verbose && r %% (n_simu / 10) == 0) message("Replicate ", r, " / ", n_simu)
     sim <- generate_data(scenario = pars, type = type, seed = (r * 10 + seed0))
 
     # proposed: Federated Platform Trial
-    fit_FP <- run_oneshotFP(sim$data, sim$n_site, target_site = target_site, homo = FALSE, no_borrow = FALSE, time_trend = TRUE, lambda_local = (lambda / sim$n_site), lambda_global = lambda)
-    b_fp <- fit_FP$beta
-    intercept_col <- if (paste0("(Intercept)", target_site) %in% coef_names) {
-      paste0("(Intercept)", target_site)
-    } else {
-      "(Intercept)"
-    }
-    beta_mat_FP[r, intercept_col] <- b_fp[paste0("(Intercept)_loc", target_site)]
-    beta_mat_FP[r, intersect(coef_names, c("trt_group", "X1", "X2", "X3"))] <-
-      b_fp[c("trt_group", "X1", "X2", "X3")]
+    fit_FP <- run_oneshotFP(
+      data = sim$data, n_site = sim$n_site, target_site = target_site,
+      homo = FALSE, no_borrow = FALSE, time_trend = TRUE,
+      lambda_local = (lambda / sim$n_site), lambda_global = lambda
+    )
+    beta_mat_FP <- fill_hetero_beta(beta_mat_FP, r, fit_FP$beta)
     beta_mat_FP[r, c("ATE", "prob")] <- c(fit_FP$ATE, fit_FP$prob)
 
+    # proposed with separate intercepts (no borrowing)
+    fit_FP_noBorrow <- run_oneshotFP(
+      data = sim$data, n_site = sim$n_site, target_site = target_site,
+      homo = FALSE, no_borrow = TRUE, time_trend = TRUE,
+      lambda_local = (lambda / sim$n_site), lambda_global = lambda
+    )
+    beta_mat_FP_noBorrow <- fill_hetero_beta(beta_mat_FP_noBorrow, r, fit_FP_noBorrow$beta)
+    beta_mat_FP_noBorrow[r, c("ATE", "prob")] <- c(fit_FP_noBorrow$ATE, fit_FP_noBorrow$prob)
+
     # complete data model
-    fit_complete <- run_complete(sim$data, sim$n_site, target_site)
-    b_complete <- fit_complete$beta
-    beta_mat_complete[r, "(Intercept)"] <- b_complete["beta0"]
-    beta_mat_complete[r, intersect(coef_names, c("trt_group", "X1", "X2", "X3"))] <-
-      b_complete[c("trt_group", "X1", "X2", "X3")]
+    fit_complete <- run_complete(
+      data = sim$data, n_site = sim$n_site, target_site = target_site
+    )
+    beta_mat_complete <- fill_pooled_beta(beta_mat_complete, r, fit_complete$beta)
     beta_mat_complete[r, c("ATE", "prob")] <- c(fit_complete$ATE, fit_complete$prob)
 
     # BFI
     fit_BFI <- run_BFI(
-      data = sim$data, n_site = sim$n_site, target_site = target_site, 
-      lambda_loc = (lambda / sim$n_site), lambda_glb = lambda, 
+      data = sim$data, n_site = sim$n_site, target_site = target_site,
+      lambda_loc = (lambda / sim$n_site), lambda_glb = lambda,
       homo = FALSE
-      )
-    b_bfi <- fit_BFI$theta_hat
-    beta_mat_BFI[r, "(Intercept)"] <- b_bfi[paste0("(Intercept)_loc", target_site)]
-    beta_mat_BFI[r, intersect(coef_names, c("trt_group", "X1", "X2", "X3"))] <-
-      b_bfi[c("trt_group", "X1", "X2", "X3")]
+    )
+    beta_mat_BFI <- fill_hetero_beta(beta_mat_BFI, r, fit_BFI$theta_hat)
     beta_mat_BFI[r, c("ATE", "prob")] <- c(fit_BFI$ATE, fit_BFI$prob)
-    
-    # combined
-    data_comb <- sim$data %>% select(-c(site, temporal_ind))
+
+    # BFI hetero intercept model with individual-level lm/glm (no time trend)
+    data_BFI_comp <- sim$data %>%
+      select(-temporal_ind) %>%
+      mutate(site = factor(site))
+    site_levels <- levels(data_BFI_comp$site)
+    fit_formula <- reformulate(c(shared_coef_names, "site"), response = "Y")
     if (type == 1) {
-      fit_comb <- lm(Y ~ ., data = data_comb)
-      beta_mat_comb[r, coef_names] <- coef(fit_comb)
-      beta_mat_comb[r, "ATE"] <- coef(fit_comb)["trt_group"]
-      beta_mat_comb[r, "prob"] <- summary(fit_comb)$coefficients["trt_group", "Pr(>|t|)"]
+      fit_BFI_comp <- lm(fit_formula, data = data_BFI_comp)
+      beta_mat_BFI_comp <- fill_hetero_beta(beta_mat_BFI_comp, r, glm_to_hetero_beta(fit_BFI_comp, site_levels))
+      beta_mat_BFI_comp[r, "ATE"] <- coef(fit_BFI_comp)["trt_group"]
+      beta_mat_BFI_comp[r, "prob"] <- summary(fit_BFI_comp)$coefficients["trt_group", "Pr(>|t|)"]
     } else if (type == 2) {
-      fit_comb <- glm(Y ~ ., data = data_comb, family = "binomial")
-      beta_mat_comb[r, coef_names] <- coef(fit_comb)
-      beta_mat_comb[r, "ATE"] <- mean(predict(fit_comb, newdata = transform(data_comb, trt_group = 1), type = "response")) -
-        mean(predict(fit_comb, newdata = transform(data_comb, trt_group = 0), type = "response"))
-      beta_mat_comb[r, "prob"] <- summary(fit_comb)$coefficients["trt_group", "Pr(>|z|)"]
+      fit_BFI_comp <- glm(fit_formula, data = data_BFI_comp, family = "binomial")
+      beta_mat_BFI_comp <- fill_hetero_beta(beta_mat_BFI_comp, r, glm_to_hetero_beta(fit_BFI_comp, site_levels))
+      data_target <- sim$data %>%
+        filter(site == target_site, temporal_ind %in% intersect(temporal_ind[trt_group == 0], temporal_ind[trt_group == 1])) %>%
+        select(-temporal_ind) %>%
+        mutate(site = factor(site, levels = site_levels))
+      beta_mat_BFI_comp[r, "ATE"] <- mean(predict(fit_BFI_comp, newdata = transform(data_target, trt_group = 1), type = "response")) -
+        mean(predict(fit_BFI_comp, newdata = transform(data_target, trt_group = 0), type = "response"))
+      beta_mat_BFI_comp[r, "prob"] <- summary(fit_BFI_comp)$coefficients["trt_group", "Pr(>|z|)"]
     }
-    
-    # local
-    data_local <- sim$data %>% filter(site == target_site) %>% select(-c(site, temporal_ind))
+
+    # pooled
+    data_pool <- sim$data %>% select(-c(site, temporal_ind))
+    if (type == 1) {
+      fit_pool <- lm(Y ~ ., data = data_pool)
+      beta_mat_pool[r, coef_names] <- coef(fit_pool)
+      beta_mat_pool[r, "ATE"] <- coef(fit_pool)["trt_group"]
+      beta_mat_pool[r, "prob"] <- summary(fit_pool)$coefficients["trt_group", "Pr(>|t|)"]
+    } else if (type == 2) {
+      fit_pool <- glm(Y ~ ., data = data_pool, family = "binomial")
+      beta_mat_pool[r, coef_names] <- coef(fit_pool)
+      beta_mat_pool[r, "ATE"] <- mean(predict(fit_pool, newdata = transform(data_pool, trt_group = 1), type = "response")) -
+        mean(predict(fit_pool, newdata = transform(data_pool, trt_group = 0), type = "response"))
+      beta_mat_pool[r, "prob"] <- summary(fit_pool)$coefficients["trt_group", "Pr(>|z|)"]
+    }
+
+    # local: concurrent trt/ctrl periods only
+    data_local <- sim$data %>%
+      filter(site == target_site, temporal_ind %in% intersect(temporal_ind[trt_group == 0], temporal_ind[trt_group == 1])) %>%
+      select(-c(site, temporal_ind))
     if (type == 1) {
       fit_local <- lm(Y ~ ., data = data_local)
       beta_mat_local[r, coef_names] <- coef(fit_local)
@@ -767,6 +906,16 @@ main_func <- function(
         mean(predict(fit_local, newdata = transform(data_local, trt_group = 0), type = "response"))
       beta_mat_local[r, "prob"] <- summary(fit_local)$coefficients["trt_group", "Pr(>|z|)"]
     }
+
+    # local: time machine
+    fit_localTM <- run_TM(sim$data %>% filter(site == target_site))
+    beta_mat_localTM <- fill_pooled_beta(beta_mat_localTM, r, fit_localTM$beta)
+    beta_mat_localTM[r, c("ATE", "prob")] <- c(fit_localTM$ATE, fit_localTM$prob)
+
+    # pooled: time machine
+    fit_poolTM <- run_TM(sim$data, target_site = target_site)
+    beta_mat_poolTM <- fill_pooled_beta(beta_mat_poolTM, r, fit_poolTM$beta)
+    beta_mat_poolTM[r, c("ATE", "prob")] <- c(fit_poolTM$ATE, fit_poolTM$prob)
   }
 
   add_result_cols <- function(mat, method) {
@@ -775,9 +924,13 @@ main_func <- function(
 
   list(
     beta_mat_FP = add_result_cols(beta_mat_FP, "oneshotFP"),
+    beta_mat_FP_noBorrow = add_result_cols(beta_mat_FP_noBorrow, "oneshotFP_noBorrow"),
     beta_mat_complete = add_result_cols(beta_mat_complete, "Complete"),
     beta_mat_BFI = add_result_cols(beta_mat_BFI, "BFI"),
-    beta_mat_comb = add_result_cols(beta_mat_comb, "Pooled"),
-    beta_mat_local = add_result_cols(beta_mat_local, "Local")
+    beta_mat_BFI_comp = add_result_cols(beta_mat_BFI_comp, "BFI_comp"),
+    beta_mat_pool = add_result_cols(beta_mat_pool, "Pooled"),
+    beta_mat_local = add_result_cols(beta_mat_local, "Local"),
+    beta_mat_localTM = add_result_cols(beta_mat_localTM, "LocalTM"),
+    beta_mat_poolTM = add_result_cols(beta_mat_poolTM, "PoolTM")
   )
 }

@@ -3,23 +3,23 @@
 n_by_site <- list(
   # continuous y
   # 4 sites
-  bind_cols(ctrl = c(30, 40, 50, 30), trt = c(0, 0, 0, 30)),
-  bind_cols(ctrl = c(30, 40, 50, 30)*2, trt = c(0, 0, 0, 30)*2), 
-  bind_cols(ctrl = c(30, 40, 50, 30)*5, trt = c(0, 0, 0, 30)*5),
+  bind_cols(ctrl = c(30, 40, 50, 60), trt = c(0, 0, 0, 30)),
+  bind_cols(ctrl = c(30, 40, 50, 60)*2, trt = c(0, 0, 0, 30)*2), 
+  bind_cols(ctrl = c(30, 40, 50, 60)*5, trt = c(0, 0, 0, 30)*5),
   # 6 sites
-  bind_cols(ctrl = c(30, 40, 50, 30, 40, 50), trt = c(0, 0, 0, 0, 0, 50)),
-  bind_cols(ctrl = c(30, 40, 50, 30, 40, 50)*2, trt = c(0, 0, 0, 0, 0, 50)*2), 
-  bind_cols(ctrl = c(30, 40, 50, 30, 40, 50)*5, trt = c(0, 0, 0, 0, 0, 50)*5),
+  bind_cols(ctrl = c(30, 40, 50, 30, 40, 100), trt = c(0, 0, 0, 0, 0, 50)),
+  bind_cols(ctrl = c(30, 40, 50, 30, 40, 100)*2, trt = c(0, 0, 0, 0, 0, 50)*2), 
+  bind_cols(ctrl = c(30, 40, 50, 30, 40, 100)*5, trt = c(0, 0, 0, 0, 0, 50)*5),
   
   # binary y
   # 4 sites
-  bind_cols(ctrl = c(30, 40, 50, 30), trt = c(0, 0, 0, 30)) * 2,
-  bind_cols(ctrl = c(30, 40, 50, 30)*2, trt = c(0, 0, 0, 30)*2) * 2, 
-  bind_cols(ctrl = c(30, 40, 50, 30)*5, trt = c(0, 0, 0, 30)*5) * 2,
+  bind_cols(ctrl = c(30, 40, 50, 60), trt = c(0, 0, 0, 30)) * 2,
+  bind_cols(ctrl = c(30, 40, 50, 60)*2, trt = c(0, 0, 0, 30)*2) * 2, 
+  bind_cols(ctrl = c(30, 40, 50, 60)*5, trt = c(0, 0, 0, 30)*5) * 2,
   # 6 sites
-  bind_cols(ctrl = c(30, 40, 50, 30, 40, 50), trt = c(0, 0, 0, 0, 0, 50)) * 2,
-  bind_cols(ctrl = c(30, 40, 50, 30, 40, 50)*2, trt = c(0, 0, 0, 0, 0, 50)*2) * 2, 
-  bind_cols(ctrl = c(30, 40, 50, 30, 40, 50)*5, trt = c(0, 0, 0, 0, 0, 50)*5) * 2
+  bind_cols(ctrl = c(30, 40, 50, 30, 40, 100), trt = c(0, 0, 0, 0, 0, 50)) * 2,
+  bind_cols(ctrl = c(30, 40, 50, 30, 40, 100)*2, trt = c(0, 0, 0, 0, 0, 50)*2) * 2, 
+  bind_cols(ctrl = c(30, 40, 50, 30, 40, 100)*5, trt = c(0, 0, 0, 0, 0, 50)*5) * 2
   
 )
 
@@ -75,7 +75,8 @@ active_time <- list(
     site1 = 1:4,
     site2 = 2:5,
     site3 = 4:6,
-    site4 = 6
+    site4_ctrl = 5:6,
+    site4_trt = 6
   ), 
   # 6 sites w/ 10 periods
   list(
@@ -84,7 +85,8 @@ active_time <- list(
     site3 = 4:6,
     site4 = 6:8,
     site5 = 7:10,
-    site6 = 10
+    site6_ctrl = 9:10,
+    site6_trt = 10
   )
 )
 
