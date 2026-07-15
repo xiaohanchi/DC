@@ -10,8 +10,10 @@ make_xy <- function(dat, site_col = "site", y_col = "Y", intercept = TRUE) {
 }
 
 
-generate_data <- function(scenario = NULL, type = 1, seed = 233) {
+generate_data <- function(scenario = NULL, type = 1, 
+                          adjusted = TRUE, seed = 233) {
   # type = 1 for continuous outcome; type = 2 for binary outcome
+  # adjusted = TRUE for covariate adjusted model; adjusted = FALSE for unadjusted model
   if (is.null(scenario)) scenario <- get("scenario", envir = .GlobalEnv)
 
   pars <- scenario
@@ -47,8 +49,14 @@ generate_data <- function(scenario = NULL, type = 1, seed = 233) {
     } else {
       rbinom(n_k, size = 1, prob = expit(eta))
     }
-    data <- tibble(site = kk, trt_group, temporal_ind, X1, X2, X3, Y) %>%
-      arrange(trt_group, temporal_ind)
+    if(adjusted) {
+      data <- tibble(site = kk, trt_group, temporal_ind, X1, X2, X3, Y) %>%
+        arrange(trt_group, temporal_ind)
+    } else {
+      data <- tibble(site = kk, trt_group, temporal_ind, Y) %>%
+        arrange(trt_group, temporal_ind)
+    }
+    
     data
   })
 
@@ -60,11 +68,6 @@ generate_data <- function(scenario = NULL, type = 1, seed = 233) {
     type = type
   )
 }
-#
-# res_tmp <- generate_data(scenario = scenario, type = 2)
-# data <- res_tmp$data
-# n_site <- res_tmp$n_site
-# target_site <- res_tmp$target_site
 
 run_MAP <- function(data, target_site, lambda = 0.0001, type) {
   # type: 1 = all sites, 2 = target site only
@@ -763,6 +766,7 @@ run_oneshotFP <- function(data,
 main_func <- function(
   pars = NULL,
   type = 1,
+  adjusted = TRUE, 
   lambda = 0.0001,
   n_simu = 1000,
   seed0 = 233,
@@ -784,7 +788,8 @@ main_func <- function(
   true_beta <- c(
     `(Intercept)` = beta0_true,
     trt_group = pars$beta_trt,
-    setNames(pars$beta, x_names)
+    # setNames(pars$beta, x_names)
+    if (adjusted) setNames(pars$beta, x_names) else NULL
   )
   coef_names <- names(true_beta)
   shared_coef_names <- setdiff(coef_names, "(Intercept)")
@@ -816,7 +821,10 @@ main_func <- function(
 
   for (r in seq_len(n_simu)) {
     if (verbose && r %% (n_simu / 10) == 0) message("Replicate ", r, " / ", n_simu)
-    sim <- generate_data(scenario = pars, type = type, seed = (r * 10 + seed0))
+    sim <- generate_data(
+      scenario = pars, type = type, adjusted = adjusted, 
+      seed = (seed0 * n_simu + r) * 10
+      )
 
     # proposed: Federated Platform Trial
     fit_FP <- run_oneshotFP(
@@ -919,6 +927,13 @@ main_func <- function(
   }
 
   add_result_cols <- function(mat, method) {
+    if (!adjusted) {
+      mat <- cbind(
+        mat[, setdiff(colnames(mat), c("ATE", "prob")), drop = FALSE],
+        matrix(NA_real_, nrow(mat), length(x_names), dimnames = list(NULL, x_names)),
+        mat[, c("ATE", "prob"), drop = FALSE]
+      )
+    }
     cbind(replicate = (seq_len(nrow(mat)) + n_simu * (rep - 1)), method = method, mat)
   }
 
