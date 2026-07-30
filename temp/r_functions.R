@@ -96,6 +96,16 @@ run_MAP <- function(data, target_site, lambda = 0.0001, type) {
 run_TM <- function(data, target_site = NULL) {
 
   y_type <- if (all(data$Y %in% c(0, 1))) 2 else 1
+  # target-site moments for continuous X
+  ts_rows <- if (is.null(target_site)) rep(TRUE, nrow(data)) else data$site == target_site
+  Xt <- data[ts_rows, setdiff(names(data), c("site", "Y", "temporal_ind", "trt_group")), drop = FALSE]
+  Xt <- Xt[vapply(Xt, function(z) is.numeric(z) && length(unique(z)) > 2L, logical(1))]
+  # standardize continuous X using target-site moments
+  if (ncol(Xt)) {
+    mu <- colSums(Xt) / nrow(Xt)
+    s <- sqrt(pmax(colSums(Xt^2) / nrow(Xt) - mu^2, 1e-12))
+    data[, names(mu)] <- scale(data[, names(mu), drop = FALSE], center = mu, scale = s)
+  }
   X_mat <- data %>%
     select(-c(site, temporal_ind, Y)) %>%
     as.matrix()
@@ -105,14 +115,29 @@ run_TM <- function(data, target_site = NULL) {
     select(-c(site, temporal_ind, Y)) %>%
     as.matrix()
 
+  use_agg <- (y_type == 2 && ncol(X_mat) == 1L)
   if (y_type == 1) {
+    s_y <- sd(data$Y[if (is.null(target_site)) TRUE else data$site == target_site])
     jagsdata <- list(
       N = nrow(data),
       y = data$Y,
       Nperiod = max(data$temporal_ind),
       X = X_mat,
       time = data$temporal_ind,
-      beta_p = ncol(X_mat)
+      beta_p = ncol(X_mat),
+      lambda_beta = (1 / 2.5^2) / max(s_y, 1e-8)^2
+    )
+  } else if (use_agg) {
+    agg <- data %>%
+      group_by(temporal_ind, trt_group) %>%
+      summarise(y = sum(Y), n = dplyr::n(), .groups = "drop")
+    jagsdata <- list(
+      N_strata = nrow(agg),
+      y = agg$y,
+      n = agg$n,
+      Nperiod = max(data$temporal_ind),
+      time = agg$temporal_ind,
+      trt = agg$trt_group
     )
   } else {
     jagsdata <- list(
@@ -151,7 +176,7 @@ run_TM <- function(data, target_site = NULL) {
   })
 
   jagsmodel <- run.jags(
-    model = if (y_type == 1) TM_continuous else TM_binary,
+    model = if (y_type == 1) TM_continuous else if (use_agg) TM_binary_agg else TM_binary,
     monitor = if (y_type == 1) c("beta0", "theta", "prec_y") else c("beta0", "theta", "phat_ctrl", "phat_trt"),
     data = jagsdata, n.chains = 4,
     adapt = 1000, burnin = 4000, sample = 5000, summarise = FALSE, thin = 2,
@@ -185,6 +210,15 @@ run_poolTM <- function(data, target_site) run_TM(data, target_site = target_site
 run_complete <- function(data, n_site, target_site) {
 
   y_type <- if (all(data$Y %in% c(0, 1))) 2 else 1
+  # target-site moments for continuous X
+  Xt <- data[data$site == target_site, setdiff(names(data), c("site", "Y", "temporal_ind", "trt_group")), drop = FALSE]
+  Xt <- Xt[vapply(Xt, function(z) is.numeric(z) && length(unique(z)) > 2L, logical(1))]
+  # standardize continuous X using target-site moments
+  if (ncol(Xt)) {
+    mu <- colSums(Xt) / nrow(Xt)
+    s <- sqrt(pmax(colSums(Xt^2) / nrow(Xt) - mu^2, 1e-12))
+    data[, names(mu)] <- scale(data[, names(mu), drop = FALSE], center = mu, scale = s)
+  }
   X_mat <- data %>%
     select(-c(site, temporal_ind, Y)) %>%
     as.matrix()
@@ -194,7 +228,9 @@ run_complete <- function(data, n_site, target_site) {
     select(-c(site, temporal_ind, Y)) %>%
     as.matrix()
 
+  use_agg <- (y_type == 2 && ncol(X_mat) == 1L)
   if (y_type == 1) {
+    s_y <- sd(data$Y[data$site == target_site])
     jagsdata <- list(
       N = nrow(data),
       y = data$Y,
@@ -203,6 +239,22 @@ run_complete <- function(data, n_site, target_site) {
       X = X_mat,
       time = data$temporal_ind,
       beta_p = ncol(X_mat),
+      n_site = n_site,
+      target_site = target_site,
+      lambda_beta = (1 / 2.5^2) / max(s_y, 1e-8)^2
+    )
+  } else if (use_agg) {
+    agg <- data %>%
+      group_by(site, temporal_ind, trt_group) %>%
+      summarise(y = sum(Y), n = dplyr::n(), .groups = "drop")
+    jagsdata <- list(
+      N_strata = nrow(agg),
+      y = agg$y,
+      n = agg$n,
+      Nperiod = max(data$temporal_ind),
+      site = agg$site,
+      time = agg$temporal_ind,
+      trt = agg$trt_group,
       n_site = n_site,
       target_site = target_site
     )
@@ -250,7 +302,7 @@ run_complete <- function(data, n_site, target_site) {
   })
 
   jagsmodel <- run.jags(
-    model = if (y_type == 1) complete_continuous else complete_binary,
+    model = if (y_type == 1) complete_continuous else if (use_agg) complete_binary_agg else complete_binary,
     monitor = if (y_type == 1) c("beta0", "theta", "prec_y") else c("beta0", "theta", "phat_ctrl", "phat_trt"),
     data = jagsdata, n.chains = 4,
     adapt = 1000, burnin = 4000, sample = 5000, summarise = FALSE, thin = 2,
@@ -281,6 +333,11 @@ run_complete <- function(data, n_site, target_site) {
 run_BFI <- function(data, n_site, target_site, lambda_loc = 0.0001, lambda_glb = 0.0001, homo = TRUE) {
   family <- if (all(data$Y %in% c(0, 1))) "binomial" else "gaussian"
 
+  # target-site moments for continuous X
+  Xt <- data[data$site == target_site, setdiff(names(data), c("site", "Y", "temporal_ind", "trt_group")), drop = FALSE]
+  Xt <- Xt[vapply(Xt, function(z) is.numeric(z) && length(unique(z)) > 2L, logical(1))]
+  target_x_summary <- list(n = nrow(Xt), sum = colSums(Xt), sumsq = colSums(Xt^2))
+
   Ms <- fits <- thetahats <- Ahats <- Lambdas <- list()
   warning_sites <- c()
 
@@ -288,10 +345,18 @@ run_BFI <- function(data, n_site, target_site, lambda_loc = 0.0001, lambda_glb =
     Ms[[l]] <- data %>%
       filter(site == l) %>%
       select(-c(site, temporal_ind))
+    # standardize continuous X using target-site moments
+    if (length(target_x_summary$sum)) {
+      mu <- target_x_summary$sum / target_x_summary$n
+      s <- sqrt(pmax(target_x_summary$sumsq / target_x_summary$n - mu^2, 1e-12))
+      Ms[[l]][, names(mu)] <- scale(Ms[[l]][, names(mu), drop = FALSE], center = mu, scale = s)
+    }
     Lambdas[[l]] <- inv.prior.cov(
       as.data.frame(Ms[[l]] %>% select(-c(Y))),
       lambda = lambda_loc, family = family
     )
+    Lambdas[[l]]["(Intercept)", "(Intercept)"] <- lambda_loc / 100
+    if ("sigma2" %in% colnames(Lambdas[[l]])) Lambdas[[l]]["sigma2", "sigma2"] <- lambda_loc / 100
     fits[[l]] <- withCallingHandlers(
       MAP.estimation(
         y = Ms[[l]]$Y, X = as.data.frame(Ms[[l]] %>% select(-c(Y))),
@@ -308,9 +373,11 @@ run_BFI <- function(data, n_site, target_site, lambda_loc = 0.0001, lambda_glb =
 
   if (homo) {
     Lambda_glb <- inv.prior.cov(
-      X = as.data.frame(data %>% select(-c(site, temporal_ind, Y))),
+      X = as.data.frame(Ms[[1]] %>% select(-c(Y))),
       lambda = lambda_glb, family = family
     )
+    Lambda_glb["(Intercept)", "(Intercept)"] <- lambda_glb / 100
+    if ("sigma2" %in% colnames(Lambda_glb)) Lambda_glb["sigma2", "sigma2"] <- lambda_glb / 100
     fit <- bfi(
       theta_hats = thetahats,
       A_hats = Ahats,
@@ -322,10 +389,13 @@ run_BFI <- function(data, n_site, target_site, lambda_loc = 0.0001, lambda_glb =
     )
   } else {
     Lambda_glb_hetero <- inv.prior.cov(
-      X = as.data.frame(data %>% select(-c(site, temporal_ind, Y))),
+      X = as.data.frame(Ms[[1]] %>% select(-c(Y))),
       lambda = lambda_glb, family = family,
       stratified = TRUE, strat_par = 1, L = n_site
     )
+    i0 <- grep("^\\(Intercept\\)", colnames(Lambda_glb_hetero))
+    diag(Lambda_glb_hetero)[i0] <- lambda_glb / 100
+    if ("sigma2" %in% colnames(Lambda_glb_hetero)) Lambda_glb_hetero["sigma2", "sigma2"] <- lambda_glb / 100
     priors_all <- list(Lambdas[[1]], Lambda_glb_hetero)
     fit <- bfi(
       theta_hats = thetahats,
@@ -349,6 +419,13 @@ run_BFI <- function(data, n_site, target_site, lambda_loc = 0.0001, lambda_glb =
       filter(site == target_site) %>%
       filter(temporal_ind %in% intersect(temporal_ind[trt_group == 0], temporal_ind[trt_group == 1]))
     X_target <- as.matrix(target_dat[, beta_cols, drop = FALSE])
+    # standardize continuous X using target-site moments
+    if (length(target_x_summary$sum)) {
+      mu <- target_x_summary$sum / target_x_summary$n
+      s <- sqrt(pmax(target_x_summary$sumsq / target_x_summary$n - mu^2, 1e-12))
+      j <- intersect(names(mu), colnames(X_target))
+      if (length(j)) X_target[, j] <- scale(X_target[, j, drop = FALSE], center = mu[j], scale = s[j])
+    }
     intercept_col <- if (homo) "(Intercept)" else paste0("(Intercept)_loc", target_site)
     eta <- as.numeric(est[intercept_col] + X_target %*% est[beta_cols])
     p_est <- list(ctrl = expit(eta), trt = expit(eta + est["trt_group"]))
@@ -500,20 +577,33 @@ run_oneshotFP <- function(data,
     X_df,
     lambda = lambda_local, family = family, intercept = TRUE
   )
+  Lambda_loc["(Intercept)", "(Intercept)"] <- lambda_local / 100
   Lambda_global <- inv.prior.cov(
     X_df,
     lambda = lambda_global, family = family, intercept = TRUE
   )
+  Lambda_global["(Intercept)", "(Intercept)"] <- lambda_global / 100
   Lambda_glb_hetero <- inv.prior.cov(
     X_df,
     lambda = lambda_global, family = family,
     stratified = TRUE, strat_par = 1, L = n_site
   )
+  i0 <- grep("^\\(Intercept\\)", colnames(Lambda_glb_hetero))
+  diag(Lambda_glb_hetero)[i0] <- lambda_global / 100
+  # keep weak prior on sigma2 / log_sigma2 
+  if ("sigma2" %in% colnames(Lambda_loc)) {
+    Lambda_loc["sigma2", "sigma2"] <- lambda_local / 100
+    Lambda_global["sigma2", "sigma2"] <- Lambda_glb_hetero["sigma2", "sigma2"] <- lambda_global / 100
+  }
 
+  # target-site moments for continuous X
+  Xt <- data[data[[site_col]] == target_site, setdiff(names(data), c(site_col, y_col, "temporal_ind", "trt_group")), drop = FALSE]
+  Xt <- Xt[vapply(Xt, function(z) is.numeric(z) && length(unique(z)) > 2L, logical(1))]
+  target_x_summary <- list(n = nrow(Xt), sum = colSums(Xt), sumsq = colSums(Xt^2))
 
   if (y_type == 1) {
     Hess_aa <- Hess_ab <- Hess_bb <- Hess_local <- eta_local <- vector("list", n_site)
-    lambda_log_s2 <- lambda_local
+    lambda_log_s2 <- lambda_local / 100
     for (i in seq_len(n_site)) {
       if (time_trend) {
         prep <- make_xy(
@@ -529,6 +619,13 @@ run_oneshotFP <- function(data,
         )
         X_df_i <- prep$X
       }
+      # standardize continuous X using target-site moments
+      if (length(target_x_summary$sum)) {
+        mu <- target_x_summary$sum / target_x_summary$n
+        s <- sqrt(pmax(target_x_summary$sumsq / target_x_summary$n - mu^2, 1e-12))
+        X_df_i[, names(mu)] <- scale(X_df_i[, names(mu), drop = FALSE], center = mu, scale = s)
+      }
+
       p_coef <- ncol(X_df_i)
       beta_init <- lm.fit(X_df_i, prep$y)$coef
       beta_init[is.na(beta_init)] <- 0
@@ -609,7 +706,8 @@ run_oneshotFP <- function(data,
         target_site = target_site,
         n_p = length(beta_map),
         y_laplace = as.numeric(beta_map),
-        invSigma = -(hess_post + Lambda_glb_hetero[ord, ord])
+        invSigma = -(hess_post + Lambda_glb_hetero[ord, ord]),
+        lambda_beta = lambda_global
       )
 
       # no_borrow: hetero, no borrow, time trend modeling; 
@@ -654,6 +752,12 @@ run_oneshotFP <- function(data,
           site_col = site_col, y_col = y_col, intercept = TRUE
         )
         X_df_i <- prep$X
+      }
+      # standardize continuous X using target-site moments
+      if (length(target_x_summary$sum)) {
+        mu <- target_x_summary$sum / target_x_summary$n
+        s <- sqrt(pmax(target_x_summary$sumsq / target_x_summary$n - mu^2, 1e-12))
+        X_df_i[, names(mu)] <- scale(X_df_i[, names(mu), drop = FALSE], center = mu, scale = s)
       }
 
       if (i == target_site) {
@@ -826,11 +930,19 @@ main_func <- function(
       seed = (seed0 * n_simu + r) * 10
       )
 
+    # continuous: N(0, (2.5 * sd_Y)^2) 
+    lam_r <- if (type == 1) {
+      s_y <- sd(sim$data$Y[sim$data$site == target_site[1]])
+      lambda / max(s_y, 1e-8)^2
+    } else {
+      lambda
+    }
+
     # proposed: Federated Platform Trial
     fit_FP <- run_oneshotFP(
       data = sim$data, n_site = sim$n_site, target_site = target_site,
       homo = FALSE, no_borrow = FALSE, time_trend = TRUE,
-      lambda_local = (lambda / sim$n_site), lambda_global = lambda
+      lambda_local = lam_r, lambda_global = lam_r
     )
     beta_mat_FP <- fill_hetero_beta(beta_mat_FP, r, fit_FP$beta)
     beta_mat_FP[r, c("ATE", "prob")] <- c(fit_FP$ATE, fit_FP$prob)
@@ -839,7 +951,7 @@ main_func <- function(
     fit_FP_noBorrow <- run_oneshotFP(
       data = sim$data, n_site = sim$n_site, target_site = target_site,
       homo = FALSE, no_borrow = TRUE, time_trend = TRUE,
-      lambda_local = (lambda / sim$n_site), lambda_global = lambda
+      lambda_local = lam_r, lambda_global = lam_r
     )
     beta_mat_FP_noBorrow <- fill_hetero_beta(beta_mat_FP_noBorrow, r, fit_FP_noBorrow$beta)
     beta_mat_FP_noBorrow[r, c("ATE", "prob")] <- c(fit_FP_noBorrow$ATE, fit_FP_noBorrow$prob)
@@ -854,14 +966,24 @@ main_func <- function(
     # BFI
     fit_BFI <- run_BFI(
       data = sim$data, n_site = sim$n_site, target_site = target_site,
-      lambda_loc = (lambda / sim$n_site), lambda_glb = lambda,
+      lambda_loc = lam_r, lambda_glb = lam_r,
       homo = FALSE
     )
     beta_mat_BFI <- fill_hetero_beta(beta_mat_BFI, r, fit_BFI$theta_hat)
     beta_mat_BFI[r, c("ATE", "prob")] <- c(fit_BFI$ATE, fit_BFI$prob)
 
+    # target-site standardized data for MLE methods (Local / Pooled / BFI_comp)
+    dat_std <- sim$data
+    Xt <- dat_std[dat_std$site == target_site[1], setdiff(names(dat_std), c("site", "Y", "temporal_ind", "trt_group")), drop = FALSE]
+    Xt <- Xt[vapply(Xt, function(z) is.numeric(z) && length(unique(z)) > 2L, logical(1))]
+    if (ncol(Xt)) {
+      mu <- colSums(Xt) / nrow(Xt)
+      s <- sqrt(pmax(colSums(Xt^2) / nrow(Xt) - mu^2, 1e-12))
+      dat_std[, names(mu)] <- scale(dat_std[, names(mu), drop = FALSE], center = mu, scale = s)
+    }
+
     # BFI hetero intercept model with individual-level lm/glm (no time trend)
-    data_BFI_comp <- sim$data %>%
+    data_BFI_comp <- dat_std %>%
       select(-temporal_ind) %>%
       mutate(site = factor(site))
     site_levels <- levels(data_BFI_comp$site)
@@ -874,7 +996,7 @@ main_func <- function(
     } else if (type == 2) {
       fit_BFI_comp <- glm(fit_formula, data = data_BFI_comp, family = "binomial")
       beta_mat_BFI_comp <- fill_hetero_beta(beta_mat_BFI_comp, r, glm_to_hetero_beta(fit_BFI_comp, site_levels))
-      data_target <- sim$data %>%
+      data_target <- dat_std %>%
         filter(site == target_site, temporal_ind %in% intersect(temporal_ind[trt_group == 0], temporal_ind[trt_group == 1])) %>%
         select(-temporal_ind) %>%
         mutate(site = factor(site, levels = site_levels))
@@ -884,7 +1006,7 @@ main_func <- function(
     }
 
     # pooled
-    data_pool <- sim$data %>% select(-c(site, temporal_ind))
+    data_pool <- dat_std %>% select(-c(site, temporal_ind))
     if (type == 1) {
       fit_pool <- lm(Y ~ ., data = data_pool)
       beta_mat_pool[r, coef_names] <- coef(fit_pool)
@@ -899,7 +1021,7 @@ main_func <- function(
     }
 
     # local: concurrent trt/ctrl periods only
-    data_local <- sim$data %>%
+    data_local <- dat_std %>%
       filter(site == target_site, temporal_ind %in% intersect(temporal_ind[trt_group == 0], temporal_ind[trt_group == 1])) %>%
       select(-c(site, temporal_ind))
     if (type == 1) {
