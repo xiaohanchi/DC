@@ -117,7 +117,7 @@ run_TM <- function(data, target_site = NULL) {
 
   use_agg <- (y_type == 2 && ncol(X_mat) == 1L)
   if (y_type == 1) {
-    s_y <- sd(data$Y[if (is.null(target_site)) TRUE else data$site == target_site])
+    # s_y <- sd(data$Y[if (is.null(target_site)) TRUE else data$site == target_site])
     jagsdata <- list(
       N = nrow(data),
       y = data$Y,
@@ -125,7 +125,8 @@ run_TM <- function(data, target_site = NULL) {
       X = X_mat,
       time = data$temporal_ind,
       beta_p = ncol(X_mat),
-      lambda_beta = (1 / 2.5^2) / max(s_y, 1e-8)^2
+      lambda_beta = 1 / 10^2
+      # lambda_beta = (1 / 10^2) / max(s_y, 1e-8)^2
     )
   } else if (use_agg) {
     agg <- data %>%
@@ -230,7 +231,7 @@ run_complete <- function(data, n_site, target_site) {
 
   use_agg <- (y_type == 2 && ncol(X_mat) == 1L)
   if (y_type == 1) {
-    s_y <- sd(data$Y[data$site == target_site])
+    # s_y <- sd(data$Y[data$site == target_site])
     jagsdata <- list(
       N = nrow(data),
       y = data$Y,
@@ -241,7 +242,8 @@ run_complete <- function(data, n_site, target_site) {
       beta_p = ncol(X_mat),
       n_site = n_site,
       target_site = target_site,
-      lambda_beta = (1 / 2.5^2) / max(s_y, 1e-8)^2
+      lambda_beta = 1 / 10^2
+      # lambda_beta = (1 / 10^2) / max(s_y, 1e-8)^2
     )
   } else if (use_agg) {
     agg <- data %>%
@@ -355,8 +357,9 @@ run_BFI <- function(data, n_site, target_site, lambda_loc = 0.0001, lambda_glb =
       as.data.frame(Ms[[l]] %>% select(-c(Y))),
       lambda = lambda_loc, family = family
     )
-    Lambdas[[l]]["(Intercept)", "(Intercept)"] <- lambda_loc / 100
-    if ("sigma2" %in% colnames(Lambdas[[l]])) Lambdas[[l]]["sigma2", "sigma2"] <- lambda_loc / 100
+    # unified prior: intercept/noise use same lambda as slopes
+    # Lambdas[[l]]["(Intercept)", "(Intercept)"] <- lambda_loc / 100
+    # if ("sigma2" %in% colnames(Lambdas[[l]])) Lambdas[[l]]["sigma2", "sigma2"] <- lambda_loc / 100
     fits[[l]] <- withCallingHandlers(
       MAP.estimation(
         y = Ms[[l]]$Y, X = as.data.frame(Ms[[l]] %>% select(-c(Y))),
@@ -376,8 +379,9 @@ run_BFI <- function(data, n_site, target_site, lambda_loc = 0.0001, lambda_glb =
       X = as.data.frame(Ms[[1]] %>% select(-c(Y))),
       lambda = lambda_glb, family = family
     )
-    Lambda_glb["(Intercept)", "(Intercept)"] <- lambda_glb / 100
-    if ("sigma2" %in% colnames(Lambda_glb)) Lambda_glb["sigma2", "sigma2"] <- lambda_glb / 100
+    # unified prior: intercept/noise use same lambda as slopes
+    # Lambda_glb["(Intercept)", "(Intercept)"] <- lambda_glb / 100
+    # if ("sigma2" %in% colnames(Lambda_glb)) Lambda_glb["sigma2", "sigma2"] <- lambda_glb / 100
     fit <- bfi(
       theta_hats = thetahats,
       A_hats = Ahats,
@@ -393,9 +397,10 @@ run_BFI <- function(data, n_site, target_site, lambda_loc = 0.0001, lambda_glb =
       lambda = lambda_glb, family = family,
       stratified = TRUE, strat_par = 1, L = n_site
     )
-    i0 <- grep("^\\(Intercept\\)", colnames(Lambda_glb_hetero))
-    diag(Lambda_glb_hetero)[i0] <- lambda_glb / 100
-    if ("sigma2" %in% colnames(Lambda_glb_hetero)) Lambda_glb_hetero["sigma2", "sigma2"] <- lambda_glb / 100
+    
+    # i0 <- grep("^\\(Intercept\\)", colnames(Lambda_glb_hetero))
+    # diag(Lambda_glb_hetero)[i0] <- lambda_glb / 100
+    # if ("sigma2" %in% colnames(Lambda_glb_hetero)) Lambda_glb_hetero["sigma2", "sigma2"] <- lambda_glb / 100
     priors_all <- list(Lambdas[[1]], Lambda_glb_hetero)
     fit <- bfi(
       theta_hats = thetahats,
@@ -546,6 +551,7 @@ run_oneshotFP <- function(data,
                           target_site = 4,
                           homo = TRUE,
                           no_borrow = TRUE,
+                          rw_time = TRUE,
                           time_trend = TRUE,
                           lambda_local = 0.0001,
                           lambda_global = 0.0001,
@@ -577,24 +583,25 @@ run_oneshotFP <- function(data,
     X_df,
     lambda = lambda_local, family = family, intercept = TRUE
   )
-  Lambda_loc["(Intercept)", "(Intercept)"] <- lambda_local / 100
+  
+  # Lambda_loc["(Intercept)", "(Intercept)"] <- lambda_local / 100
   Lambda_global <- inv.prior.cov(
     X_df,
     lambda = lambda_global, family = family, intercept = TRUE
   )
-  Lambda_global["(Intercept)", "(Intercept)"] <- lambda_global / 100
+  # Lambda_global["(Intercept)", "(Intercept)"] <- lambda_global / 100
   Lambda_glb_hetero <- inv.prior.cov(
     X_df,
     lambda = lambda_global, family = family,
     stratified = TRUE, strat_par = 1, L = n_site
   )
-  i0 <- grep("^\\(Intercept\\)", colnames(Lambda_glb_hetero))
-  diag(Lambda_glb_hetero)[i0] <- lambda_global / 100
-  # keep weak prior on sigma2 / log_sigma2 
-  if ("sigma2" %in% colnames(Lambda_loc)) {
-    Lambda_loc["sigma2", "sigma2"] <- lambda_local / 100
-    Lambda_global["sigma2", "sigma2"] <- Lambda_glb_hetero["sigma2", "sigma2"] <- lambda_global / 100
-  }
+  # i0 <- grep("^\\(Intercept\\)", colnames(Lambda_glb_hetero))
+  # diag(Lambda_glb_hetero)[i0] <- lambda_global / 100
+  # keep weak prior on sigma2 / log_sigma2
+  # if ("sigma2" %in% colnames(Lambda_loc)) {
+  #   Lambda_loc["sigma2", "sigma2"] <- lambda_local / 100
+  #   Lambda_global["sigma2", "sigma2"] <- Lambda_glb_hetero["sigma2", "sigma2"] <- lambda_global / 100
+  # }
 
   # target-site moments for continuous X
   Xt <- data[data[[site_col]] == target_site, setdiff(names(data), c(site_col, y_col, "temporal_ind", "trt_group")), drop = FALSE]
@@ -603,7 +610,8 @@ run_oneshotFP <- function(data,
 
   if (y_type == 1) {
     Hess_aa <- Hess_ab <- Hess_bb <- Hess_local <- eta_local <- vector("list", n_site)
-    lambda_log_s2 <- lambda_local / 100
+    lambda_log_s2 <- lambda_local
+    # lambda_log_s2 <- lambda_local / 100
     for (i in seq_len(n_site)) {
       if (time_trend) {
         prep <- make_xy(
@@ -710,10 +718,22 @@ run_oneshotFP <- function(data,
         lambda_beta = lambda_global
       )
 
-      # no_borrow: hetero, no borrow, time trend modeling; 
-      # otherwise: hetero, borrow, time trend modeling
+      # 2x2: (no_borrow x rw_time)
+      # no_borrow=FALSE, rw_time=TRUE  -> horseshoe + RW
+      # no_borrow=FALSE, rw_time=FALSE -> horseshoe + indep time
+      # no_borrow=TRUE,  rw_time=TRUE  -> separate intercepts + RW
+      # no_borrow=TRUE,  rw_time=FALSE -> separate intercepts + indep time
+      jags_model_cont <- if (no_borrow && rw_time) {
+        FP_hetero_continuous
+      } else if (no_borrow && !rw_time) {
+        FP_hetero_continuous_indepTime
+      } else if (!no_borrow && rw_time) {
+        FP_continuous
+      } else {
+        FP_continuous_indepTime
+      }
       jagsmodel <- run.jags(
-        model = if (no_borrow) FP_hetero_continuous else FP_continuous,
+        model = jags_model_cont,
         monitor = if (no_borrow) c("theta", "beta0_loc") else c("theta", "delta"),
         data = jagsdata, n.chains = 4,
         adapt = 1000, burnin = 4000, sample = 5000, summarise = FALSE, thin = 2,
@@ -836,10 +856,22 @@ run_oneshotFP <- function(data,
         invSigma = -(hess_post + Lambda_glb_hetero[ord, ord])
       )
 
-      # no_borrow: hetero, no borrow, time trend modeling;
-      # otherwise: hetero, borrow, time trend modeling
+      # 2x2: (no_borrow x rw_time)
+      # no_borrow=FALSE, rw_time=TRUE  -> horseshoe + RW
+      # no_borrow=FALSE, rw_time=FALSE -> horseshoe + indep time
+      # no_borrow=TRUE,  rw_time=TRUE  -> separate intercepts + RW
+      # no_borrow=TRUE,  rw_time=FALSE -> separate intercepts + indep time
+      jags_model_bin <- if (no_borrow && rw_time) {
+        FP_hetero_binary
+      } else if (no_borrow && !rw_time) {
+        FP_hetero_binary_indepTime
+      } else if (!no_borrow && rw_time) {
+        FP_binary
+      } else {
+        FP_binary_indepTime
+      }
       jagsmodel <- run.jags(
-        model = if (no_borrow) FP_hetero_binary else FP_binary,
+        model = jags_model_bin,
         monitor = if (no_borrow) c("theta", "beta0_loc", "phat_ctrl", "phat_trt") else c("theta", "delta", "phat_ctrl", "phat_trt"),
         data = jagsdata, n.chains = 4,
         adapt = 1000, burnin = 4000, sample = 5000, summarise = FALSE, thin = 2,
@@ -920,8 +952,8 @@ main_func <- function(
     beta_vec
   }
 
-  beta_mat_FP <- beta_mat_FP_noBorrow <- beta_mat_BFI <- beta_mat_BFI_comp <- beta_mat_pool <- beta_mat_local <- beta_mat_localTM <- beta_mat_poolTM <- beta_mat_complete <- matrix(NA_real_, nrow = n_simu, ncol = length(col_names))
-  colnames(beta_mat_FP) <- colnames(beta_mat_FP_noBorrow) <- colnames(beta_mat_BFI) <- colnames(beta_mat_BFI_comp) <- colnames(beta_mat_pool) <- colnames(beta_mat_local) <- colnames(beta_mat_localTM) <- colnames(beta_mat_poolTM) <- colnames(beta_mat_complete) <- col_names
+  beta_mat_FP <- beta_mat_FP_noBorrow <- beta_mat_FP_indepTime <- beta_mat_FP_noBorrow_indepTime <- beta_mat_BFI <- beta_mat_BFI_comp <- beta_mat_pool <- beta_mat_local <- beta_mat_localTM <- beta_mat_poolTM <- beta_mat_complete <- matrix(NA_real_, nrow = n_simu, ncol = length(col_names))
+  colnames(beta_mat_FP) <- colnames(beta_mat_FP_noBorrow) <- colnames(beta_mat_FP_indepTime) <- colnames(beta_mat_FP_noBorrow_indepTime) <- colnames(beta_mat_BFI) <- colnames(beta_mat_BFI_comp) <- colnames(beta_mat_pool) <- colnames(beta_mat_local) <- colnames(beta_mat_localTM) <- colnames(beta_mat_poolTM) <- colnames(beta_mat_complete) <- col_names
 
   for (r in seq_len(n_simu)) {
     if (verbose && r %% (n_simu / 10) == 0) message("Replicate ", r, " / ", n_simu)
@@ -930,18 +962,18 @@ main_func <- function(
       seed = (seed0 * n_simu + r) * 10
       )
 
-    # continuous: N(0, (2.5 * sd_Y)^2) 
-    lam_r <- if (type == 1) {
-      s_y <- sd(sim$data$Y[sim$data$site == target_site[1]])
-      lambda / max(s_y, 1e-8)^2
-    } else {
-      lambda
-    }
+    lam_r <- lambda
+    # lam_r <- if (type == 1) {
+    #   s_y <- sd(sim$data$Y[sim$data$site == target_site[1]])
+    #   lambda / max(s_y, 1e-8)^2
+    # } else {
+    #   lambda
+    # }
 
-    # proposed: Federated Platform Trial
+    # proposed: Federated Platform Trial (borrow + RW time)
     fit_FP <- run_oneshotFP(
       data = sim$data, n_site = sim$n_site, target_site = target_site,
-      homo = FALSE, no_borrow = FALSE, time_trend = TRUE,
+      homo = FALSE, no_borrow = FALSE, rw_time = TRUE, time_trend = TRUE,
       lambda_local = lam_r, lambda_global = lam_r
     )
     beta_mat_FP <- fill_hetero_beta(beta_mat_FP, r, fit_FP$beta)
@@ -950,11 +982,29 @@ main_func <- function(
     # proposed with separate intercepts (no borrowing)
     fit_FP_noBorrow <- run_oneshotFP(
       data = sim$data, n_site = sim$n_site, target_site = target_site,
-      homo = FALSE, no_borrow = TRUE, time_trend = TRUE,
+      homo = FALSE, no_borrow = TRUE, rw_time = TRUE, time_trend = TRUE,
       lambda_local = lam_r, lambda_global = lam_r
     )
     beta_mat_FP_noBorrow <- fill_hetero_beta(beta_mat_FP_noBorrow, r, fit_FP_noBorrow$beta)
     beta_mat_FP_noBorrow[r, c("ATE", "prob")] <- c(fit_FP_noBorrow$ATE, fit_FP_noBorrow$prob)
+
+    # borrow on intercept; independent time effects (no RW)
+    fit_FP_indepTime <- run_oneshotFP(
+      data = sim$data, n_site = sim$n_site, target_site = target_site,
+      homo = FALSE, no_borrow = FALSE, rw_time = FALSE, time_trend = TRUE,
+      lambda_local = lam_r, lambda_global = lam_r
+    )
+    beta_mat_FP_indepTime <- fill_hetero_beta(beta_mat_FP_indepTime, r, fit_FP_indepTime$beta)
+    beta_mat_FP_indepTime[r, c("ATE", "prob")] <- c(fit_FP_indepTime$ATE, fit_FP_indepTime$prob)
+
+    # no borrow on intercept or time (separate intercepts + indep time)
+    fit_FP_noBorrow_indepTime <- run_oneshotFP(
+      data = sim$data, n_site = sim$n_site, target_site = target_site,
+      homo = FALSE, no_borrow = TRUE, rw_time = FALSE, time_trend = TRUE,
+      lambda_local = lam_r, lambda_global = lam_r
+    )
+    beta_mat_FP_noBorrow_indepTime <- fill_hetero_beta(beta_mat_FP_noBorrow_indepTime, r, fit_FP_noBorrow_indepTime$beta)
+    beta_mat_FP_noBorrow_indepTime[r, c("ATE", "prob")] <- c(fit_FP_noBorrow_indepTime$ATE, fit_FP_noBorrow_indepTime$prob)
 
     # complete data model
     fit_complete <- run_complete(
@@ -1062,6 +1112,8 @@ main_func <- function(
   list(
     beta_mat_FP = add_result_cols(beta_mat_FP, "oneshotFP"),
     beta_mat_FP_noBorrow = add_result_cols(beta_mat_FP_noBorrow, "oneshotFP_noBorrow"),
+    beta_mat_FP_indepTime = add_result_cols(beta_mat_FP_indepTime, "oneshotFP_indepTime"),
+    beta_mat_FP_noBorrow_indepTime = add_result_cols(beta_mat_FP_noBorrow_indepTime, "oneshotFP_noBorrow_indepTime"),
     beta_mat_complete = add_result_cols(beta_mat_complete, "Complete"),
     beta_mat_BFI = add_result_cols(beta_mat_BFI, "BFI"),
     beta_mat_BFI_comp = add_result_cols(beta_mat_BFI_comp, "BFI_comp"),

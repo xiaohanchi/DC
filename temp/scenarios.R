@@ -73,7 +73,7 @@ active_time <- list(
     site1 = 1:3,
     site2 = 2:4,
     site3 = 4:5,
-    site4_ctrl = 1:5,
+    site4_ctrl = 2:5,
     site4_trt = 5
   ), 
   # 6 sites w/ 8 periods
@@ -83,7 +83,7 @@ active_time <- list(
     site3 = 4:5,
     site4 = 5:6,
     site5 = 5:8,
-    site6_ctrl = 1:8,
+    site6_ctrl = 3:8,
     site6_trt = 8
   )
 )

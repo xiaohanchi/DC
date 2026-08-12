@@ -51,13 +51,15 @@ scenario <- list(
 
 output <- main_func(
   pars = scenario, type = all_config$y_type[sc00], 
-  adjusted = all_config$adjusted[sc00], lambda = 1/(2.5^2), 
+  adjusted = all_config$adjusted[sc00], lambda = 1/(10^2), 
   n_simu = 10, seed0 = seed00, rep = rep00
   )
 
 all_res <- list(
   oneshotFP = output$beta_mat_FP,
   oneshotFP_noBorrow = output$beta_mat_FP_noBorrow,
+  oneshotFP_indepTime = output$beta_mat_FP_indepTime,
+  oneshotFP_noBorrow_indepTime = output$beta_mat_FP_noBorrow_indepTime,
   complete = output$beta_mat_complete,
   BFI = output$beta_mat_BFI,
   BFI_comp = output$beta_mat_BFI_comp,
