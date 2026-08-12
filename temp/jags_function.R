@@ -5,8 +5,11 @@ model{
   ### Likelihood
   y_laplace[1:n_p] ~ dmnorm(theta[], invSigma[, ])
   
-  theta[(shared_p + 1)] <- log_sigma2
-  
+  for (pp in 1:n_sigma) {
+    log_sigma2_vec[pp] ~ dnorm(0, lambda_beta)
+    theta[(shared_p + pp)] <- log_sigma2_vec[pp]
+  }
+
   for (pp in 1:(Nperiod-1)) {
     theta[(beta_p + pp)] <- alpha[Nperiod - (pp - 1)]
   }
@@ -20,7 +23,7 @@ model{
 
   # hetero intercept
   for (pp in 1:n_site) {
-    theta[(shared_p+1+pp)] <- beta0 + delta[pp]
+    theta[(shared_p + n_sigma + pp)] <- beta0 + delta[pp]
     delta[pp] ~ dnorm(0, tau_delta[pp])
     tau_delta[pp] <- ifelse(pp == target_site, 1.0E10, 1 / (tau2 * lambda2[pp]))
     lambda2[pp] <- pow(lambda[pp], 2)
@@ -35,8 +38,6 @@ model{
   for (pp in 1:beta_p){
     theta[pp] ~ dnorm(0, lambda_beta)
   }
-  log_sigma2 ~ dnorm(0, lambda_beta)
-  # log_sigma2 ~ dnorm(0, lambda_beta/100)
 
 }
 "
@@ -98,8 +99,11 @@ model{
   ### Likelihood
   y_laplace[1:n_p] ~ dmnorm(theta[], invSigma[, ])
   
-  theta[(shared_p + 1)] <- log_sigma2
-  
+  for (pp in 1:n_sigma) {
+    log_sigma2_vec[pp] ~ dnorm(0, lambda_beta)
+    theta[(shared_p + pp)] <- log_sigma2_vec[pp]
+  }
+
   for (pp in 1:(Nperiod-1)) {
     theta[(beta_p + pp)] <- alpha[Nperiod - (pp - 1)]
   }
@@ -110,7 +114,7 @@ model{
 
   # hetero intercept
   for (pp in 1:n_site) {
-    theta[(shared_p+1+pp)] <- beta0 + delta[pp]
+    theta[(shared_p + n_sigma + pp)] <- beta0 + delta[pp]
     delta[pp] ~ dnorm(0, tau_delta[pp])
     tau_delta[pp] <- ifelse(pp == target_site, 1.0E10, 1 / (tau2 * lambda2[pp]))
     lambda2[pp] <- pow(lambda[pp], 2)
@@ -124,7 +128,6 @@ model{
   for (pp in 1:beta_p){
     theta[pp] ~ dnorm(0, lambda_beta)
   }
-  log_sigma2 ~ dnorm(0, lambda_beta)
 
 }
 "
@@ -180,8 +183,11 @@ FP_hetero_continuous <- "
 model{
   ### Likelihood
   y_laplace[1:n_p] ~ dmnorm(theta[], invSigma[, ])
-  
-  theta[(shared_p + 1)] <- log_sigma2
+
+  for (pp in 1:n_sigma) {
+    log_sigma2_vec[pp] ~ dnorm(0, lambda_beta)
+    theta[(shared_p + pp)] <- log_sigma2_vec[pp]
+  }
   
   for (pp in 1:(Nperiod-1)) {
     theta[(beta_p + pp)] <- alpha[Nperiod - (pp - 1)]
@@ -198,15 +204,13 @@ model{
   for (pp in 1:n_site) {
     beta0_loc[pp] ~ dnorm(0, lambda_beta)
     # beta0_loc[pp] ~ dnorm(0, lambda_beta/100)
-    theta[(shared_p + 1 + pp)] <- beta0_loc[pp]
+    theta[(shared_p + n_sigma + pp)] <- beta0_loc[pp]
   }
 
   ### Prior
   for (pp in 1:beta_p){
     theta[pp] ~ dnorm(0, lambda_beta)
   }
-  log_sigma2 ~ dnorm(0, lambda_beta)
-  # log_sigma2 ~ dnorm(0, lambda_beta/100)
 
 }
 "
@@ -261,8 +265,11 @@ FP_hetero_continuous_indepTime <- "
 model{
   ### Likelihood
   y_laplace[1:n_p] ~ dmnorm(theta[], invSigma[, ])
-  
-  theta[(shared_p + 1)] <- log_sigma2
+
+  for (pp in 1:n_sigma) {
+    log_sigma2_vec[pp] ~ dnorm(0, lambda_beta)
+    theta[(shared_p + pp)] <- log_sigma2_vec[pp]
+  }
   
   for (pp in 1:(Nperiod-1)) {
     theta[(beta_p + pp)] <- alpha[Nperiod - (pp - 1)]
@@ -275,14 +282,13 @@ model{
   # site-specific intercepts
   for (pp in 1:n_site) {
     beta0_loc[pp] ~ dnorm(0, lambda_beta)
-    theta[(shared_p + 1 + pp)] <- beta0_loc[pp]
+    theta[(shared_p + n_sigma + pp)] <- beta0_loc[pp]
   }
 
   ### Prior
   for (pp in 1:beta_p){
     theta[pp] ~ dnorm(0, lambda_beta)
   }
-  log_sigma2 ~ dnorm(0, lambda_beta)
 
 }
 "

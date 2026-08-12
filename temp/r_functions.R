@@ -550,6 +550,7 @@ run_oneshotFP <- function(data,
                           y_col = "Y",
                           target_site = 4,
                           homo = TRUE,
+                          homo_var = TRUE, 
                           no_borrow = TRUE,
                           rw_time = TRUE,
                           time_trend = TRUE,
@@ -557,6 +558,9 @@ run_oneshotFP <- function(data,
                           lambda_global = 0.0001,
                           sigma = NULL,
                           maxit = 50) {
+  # homo: homo intercept
+  # homo_var: homo model variance when y_type = 1 (continuous)
+  
   Nperiod <- max(data$temporal_ind, na.rm = TRUE)
   y_type <- if (all(data[[y_col]] %in% c(0, 1))) 2 else 1 # 1 = continuous, 2 = binary
   y <- data[[y_col]]
@@ -576,32 +580,32 @@ run_oneshotFP <- function(data,
     X_df <- as.data.frame(data[, x_cols, drop = FALSE])
   }
   coef_names <- c("(Intercept)", names(X_df))
-  shared <- if (y_type == 1) c(coef_names[-1], "sigma2") else coef_names[-1]
-
+  # shared <- if (y_type == 1) c(coef_names[-1], "sigma2") else coef_names[-1]
+  shared <- coef_names[-1]
 
   Lambda_loc <- inv.prior.cov(
     X_df,
     lambda = lambda_local, family = family, intercept = TRUE
   )
-  
-  # Lambda_loc["(Intercept)", "(Intercept)"] <- lambda_local / 100
   Lambda_global <- inv.prior.cov(
     X_df,
     lambda = lambda_global, family = family, intercept = TRUE
   )
-  # Lambda_global["(Intercept)", "(Intercept)"] <- lambda_global / 100
   Lambda_glb_hetero <- inv.prior.cov(
     X_df,
     lambda = lambda_global, family = family,
     stratified = TRUE, strat_par = 1, L = n_site
   )
-  # i0 <- grep("^\\(Intercept\\)", colnames(Lambda_glb_hetero))
-  # diag(Lambda_glb_hetero)[i0] <- lambda_global / 100
-  # keep weak prior on sigma2 / log_sigma2
-  # if ("sigma2" %in% colnames(Lambda_loc)) {
-  #   Lambda_loc["sigma2", "sigma2"] <- lambda_local / 100
-  #   Lambda_global["sigma2", "sigma2"] <- Lambda_glb_hetero["sigma2", "sigma2"] <- lambda_global / 100
-  # }
+  
+  Lambda_glb_hetero2 <- if (family == "gaussian") {
+    inv.prior.cov(
+      X_df,
+      lambda = lambda_global, family = family,
+      stratified = TRUE, strat_par = c(1, 2), L = n_site
+    )
+  } else {
+    NULL
+  }
 
   # target-site moments for continuous X
   Xt <- data[data[[site_col]] == target_site, setdiff(names(data), c(site_col, y_col, "temporal_ind", "trt_group")), drop = FALSE]
@@ -611,7 +615,6 @@ run_oneshotFP <- function(data,
   if (y_type == 1) {
     Hess_aa <- Hess_ab <- Hess_bb <- Hess_local <- eta_local <- vector("list", n_site)
     lambda_log_s2 <- lambda_local
-    # lambda_log_s2 <- lambda_local / 100
     for (i in seq_len(n_site)) {
       if (time_trend) {
         prep <- make_xy(
@@ -671,7 +674,7 @@ run_oneshotFP <- function(data,
       Hess_local[[i]] <- hess_logpost
       eta_local[[i]] <- crossprod(hess_logpost, fit$par)
     }
-    if (homo) {
+    if (homo & homo_var) {
       Hess_global <- Reduce(`+`, Hess_local)
       eta_post <- Reduce(`+`, eta_local)
       hess_post <- Hess_global - Lambda_global + n_site * Lambda_loc
@@ -689,6 +692,93 @@ run_oneshotFP <- function(data,
           sigma2 = sigma2_map
         )
       }
+    } else if (!homo_var) {
+      # hetero intercept + hetero sigma2
+      p_all <- nrow(Hess_local[[1]])
+      idx_b <- 1
+      idx_s <- p_all
+      idx_a <- 2:(p_all - 1)
+      Ha <- Reduce(`+`, lapply(Hess_local, function(H) H[idx_a, idx_a, drop = FALSE]))
+      Hess_global <- rbind(
+        do.call(cbind, c(
+          list(Ha),
+          lapply(Hess_local, function(H) H[idx_a, idx_s, drop = FALSE]),
+          lapply(Hess_local, function(H) H[idx_a, idx_b, drop = FALSE])
+        )),
+        do.call(rbind, lapply(seq_len(n_site), function(i) {
+          H <- Hess_local[[i]]
+          c(H[idx_s, idx_a], rep(0, i - 1), H[idx_s, idx_s], rep(0, n_site - i),
+            rep(0, i - 1), H[idx_s, idx_b], rep(0, n_site - i))
+        })),
+        do.call(rbind, lapply(seq_len(n_site), function(i) {
+          H <- Hess_local[[i]]
+          c(H[idx_b, idx_a], rep(0, i - 1), H[idx_b, idx_s], rep(0, n_site - i),
+            rep(0, i - 1), H[idx_b, idx_b], rep(0, n_site - i))
+        }))
+      )
+      s2_nms <- paste0("sigma2_loc", seq_len(n_site))
+      b0_nms <- paste0("(Intercept)_loc", seq_len(n_site))
+      ord <- c(coef_names[-1], s2_nms, b0_nms)
+      dimnames(Hess_global) <- list(ord, ord)
+      eta_post <- c(
+        Reduce(`+`, lapply(eta_local, function(e) e[idx_a])),
+        sapply(eta_local, `[[`, idx_s),
+        sapply(eta_local, `[[`, idx_b)
+      ) %>% setNames(ord)
+      Lam <- Lambda_glb_hetero2[ord, ord]
+      Sigma_0 <- solve(Lam)
+      hess_post <- Hess_global - Lam
+      hess_post[shared, shared] <- hess_post[shared, shared] + n_site * Lambda_loc[shared, shared]
+      site_pars <- c(s2_nms, b0_nms)
+      hess_post[site_pars, site_pars] <- hess_post[site_pars, site_pars] +
+        diag(c(rep(lambda_log_s2, n_site), rep(Lambda_loc[1, 1], n_site)))
+      beta_map <- solve(hess_post, eta_post)
+
+      jagsdata <- list(
+        Nperiod = Nperiod,
+        beta_p = length(shared[!grepl("^temporal_ind_", shared)]),
+        shared_p = length(shared),
+        n_sigma = n_site,
+        n_site = n_site,
+        target_site = target_site,
+        n_p = length(beta_map),
+        y_laplace = as.numeric(beta_map),
+        invSigma = -(hess_post + Lam),
+        lambda_beta = lambda_global
+      )
+
+      jags_model_cont <- if (no_borrow && rw_time) {
+        FP_hetero_continuous
+      } else if (no_borrow && !rw_time) {
+        FP_hetero_continuous_indepTime
+      } else if (!no_borrow && rw_time) {
+        FP_continuous
+      } else {
+        FP_continuous_indepTime
+      }
+      jagsmodel <- run.jags(
+        model = jags_model_cont,
+        monitor = if (no_borrow) c("theta", "beta0_loc") else c("theta", "delta"),
+        data = jagsdata, n.chains = 4,
+        adapt = 1000, burnin = 4000, sample = 5000, summarise = FALSE, thin = 2,
+        method = "rjags", plots = FALSE, silent.jags = T,
+        inits = lapply((c(1:4) * 100 + 123), function(s) list(.RNG.name = "base::Mersenne-Twister", .RNG.seed = s))
+      )
+      theta_samples <- as.matrix(as.mcmc.list(jagsmodel, "theta"))
+      colnames(theta_samples) <- ord
+      ord_beta <- setdiff(ord, s2_nms)
+      ATE.mcmc <- theta_samples[, "trt_group"]
+
+      result <- list(
+        ATE = mean(ATE.mcmc),
+        prob = 2 * min(mean(ATE.mcmc < 0), mean(ATE.mcmc > 0)),
+        beta = setNames(colMeans(theta_samples[, ord_beta, drop = FALSE]), ord_beta),
+        cov = cov(theta_samples[, ord_beta, drop = FALSE]),
+        Hess = hess_post,
+        Lambda_global = Lam,
+        Sigma_0 = Sigma_0,
+        sigma2 = exp(colMeans(theta_samples[, s2_nms, drop = FALSE]))
+      )
     } else {
       Hess_global <- rbind(
         do.call(cbind, c(list(Reduce(`+`, Hess_aa)), lapply(Hess_ab, t))),
@@ -702,14 +792,17 @@ run_oneshotFP <- function(data,
       Sigma_0 <- solve(Lambda_glb_hetero[ord, ord])
       hess_post <- Hess_global - Lambda_glb_hetero[ord, ord]
       hess_post[shared, shared] <- hess_post[shared, shared] + n_site * Lambda_loc[shared, shared]
-      hess_post[setdiff(ord, shared), setdiff(ord, shared)] <- hess_post[setdiff(ord, shared), setdiff(ord, shared)] + diag(Lambda_loc[1, 1], nrow = n_site, ncol = n_site)
+      hess_post["sigma2", "sigma2"] <- hess_post["sigma2", "sigma2"] + n_site * lambda_log_s2
+      b0_nms <- paste0("(Intercept)_loc", seq_len(n_site))
+      hess_post[b0_nms, b0_nms] <- hess_post[b0_nms, b0_nms] + diag(Lambda_loc[1, 1], n_site)
       beta_map <- solve(hess_post, eta_post)
       sigma2_map <- exp(beta_map["sigma2"])
 
       jagsdata <- list(
         Nperiod = Nperiod,
-        beta_p = length(shared[!grepl("^temporal_ind_", shared)]) - 1,
-        shared_p = length(shared) - 1,
+        beta_p = length(shared[!grepl("^temporal_ind_", shared)]),
+        shared_p = length(shared),
+        n_sigma = 1,
         n_site = n_site,
         target_site = target_site,
         n_p = length(beta_map),
@@ -952,8 +1045,12 @@ main_func <- function(
     beta_vec
   }
 
-  beta_mat_FP <- beta_mat_FP_noBorrow <- beta_mat_FP_indepTime <- beta_mat_FP_noBorrow_indepTime <- beta_mat_BFI <- beta_mat_BFI_comp <- beta_mat_pool <- beta_mat_local <- beta_mat_localTM <- beta_mat_poolTM <- beta_mat_complete <- matrix(NA_real_, nrow = n_simu, ncol = length(col_names))
-  colnames(beta_mat_FP) <- colnames(beta_mat_FP_noBorrow) <- colnames(beta_mat_FP_indepTime) <- colnames(beta_mat_FP_noBorrow_indepTime) <- colnames(beta_mat_BFI) <- colnames(beta_mat_BFI_comp) <- colnames(beta_mat_pool) <- colnames(beta_mat_local) <- colnames(beta_mat_localTM) <- colnames(beta_mat_poolTM) <- colnames(beta_mat_complete) <- col_names
+  beta_mat_FP <- beta_mat_FP_noBorrow <- beta_mat_FP_indepTime <- beta_mat_FP_noBorrow_indepTime <- beta_mat_FP_heteroVar <-
+    beta_mat_BFI <- beta_mat_BFI_comp <- beta_mat_pool <- beta_mat_local <- beta_mat_localTM <- beta_mat_poolTM <- beta_mat_complete <-
+    matrix(NA_real_, nrow = n_simu, ncol = length(col_names))
+  colnames(beta_mat_FP) <- colnames(beta_mat_FP_noBorrow) <- colnames(beta_mat_FP_indepTime) <- colnames(beta_mat_FP_noBorrow_indepTime) <-
+    colnames(beta_mat_FP_heteroVar) <-
+    colnames(beta_mat_BFI) <- colnames(beta_mat_BFI_comp) <- colnames(beta_mat_pool) <- colnames(beta_mat_local) <- colnames(beta_mat_localTM) <- colnames(beta_mat_poolTM) <- colnames(beta_mat_complete) <- col_names
 
   for (r in seq_len(n_simu)) {
     if (verbose && r %% (n_simu / 10) == 0) message("Replicate ", r, " / ", n_simu)
@@ -973,16 +1070,29 @@ main_func <- function(
     # proposed: Federated Platform Trial (borrow + RW time)
     fit_FP <- run_oneshotFP(
       data = sim$data, n_site = sim$n_site, target_site = target_site,
-      homo = FALSE, no_borrow = FALSE, rw_time = TRUE, time_trend = TRUE,
+      homo = FALSE, homo_var = TRUE, no_borrow = FALSE, rw_time = TRUE, time_trend = TRUE,
       lambda_local = lam_r, lambda_global = lam_r
     )
     beta_mat_FP <- fill_hetero_beta(beta_mat_FP, r, fit_FP$beta)
     beta_mat_FP[r, c("ATE", "prob")] <- c(fit_FP$ATE, fit_FP$prob)
 
+    # proposed with site-specific sigma2 (borrow + RW); binary has no sigma2 -> same as oneshotFP
+    if (type == 1) {
+      fit_FP_heteroVar <- run_oneshotFP(
+        data = sim$data, n_site = sim$n_site, target_site = target_site,
+        homo = FALSE, homo_var = FALSE, no_borrow = FALSE, rw_time = TRUE, time_trend = TRUE,
+        lambda_local = lam_r, lambda_global = lam_r
+      )
+    } else {
+      fit_FP_heteroVar <- fit_FP
+    }
+    beta_mat_FP_heteroVar <- fill_hetero_beta(beta_mat_FP_heteroVar, r, fit_FP_heteroVar$beta)
+    beta_mat_FP_heteroVar[r, c("ATE", "prob")] <- c(fit_FP_heteroVar$ATE, fit_FP_heteroVar$prob)
+
     # proposed with separate intercepts (no borrowing)
     fit_FP_noBorrow <- run_oneshotFP(
       data = sim$data, n_site = sim$n_site, target_site = target_site,
-      homo = FALSE, no_borrow = TRUE, rw_time = TRUE, time_trend = TRUE,
+      homo = FALSE, homo_var = TRUE, no_borrow = TRUE, rw_time = TRUE, time_trend = TRUE,
       lambda_local = lam_r, lambda_global = lam_r
     )
     beta_mat_FP_noBorrow <- fill_hetero_beta(beta_mat_FP_noBorrow, r, fit_FP_noBorrow$beta)
@@ -991,7 +1101,7 @@ main_func <- function(
     # borrow on intercept; independent time effects (no RW)
     fit_FP_indepTime <- run_oneshotFP(
       data = sim$data, n_site = sim$n_site, target_site = target_site,
-      homo = FALSE, no_borrow = FALSE, rw_time = FALSE, time_trend = TRUE,
+      homo = FALSE, homo_var = TRUE, no_borrow = FALSE, rw_time = FALSE, time_trend = TRUE,
       lambda_local = lam_r, lambda_global = lam_r
     )
     beta_mat_FP_indepTime <- fill_hetero_beta(beta_mat_FP_indepTime, r, fit_FP_indepTime$beta)
@@ -1000,7 +1110,7 @@ main_func <- function(
     # no borrow on intercept or time (separate intercepts + indep time)
     fit_FP_noBorrow_indepTime <- run_oneshotFP(
       data = sim$data, n_site = sim$n_site, target_site = target_site,
-      homo = FALSE, no_borrow = TRUE, rw_time = FALSE, time_trend = TRUE,
+      homo = FALSE, homo_var = TRUE, no_borrow = TRUE, rw_time = FALSE, time_trend = TRUE,
       lambda_local = lam_r, lambda_global = lam_r
     )
     beta_mat_FP_noBorrow_indepTime <- fill_hetero_beta(beta_mat_FP_noBorrow_indepTime, r, fit_FP_noBorrow_indepTime$beta)
@@ -1111,6 +1221,7 @@ main_func <- function(
 
   list(
     beta_mat_FP = add_result_cols(beta_mat_FP, "oneshotFP"),
+    beta_mat_FP_heteroVar = add_result_cols(beta_mat_FP_heteroVar, "oneshotFP_heteroVar"),
     beta_mat_FP_noBorrow = add_result_cols(beta_mat_FP_noBorrow, "oneshotFP_noBorrow"),
     beta_mat_FP_indepTime = add_result_cols(beta_mat_FP_indepTime, "oneshotFP_indepTime"),
     beta_mat_FP_noBorrow_indepTime = add_result_cols(beta_mat_FP_noBorrow_indepTime, "oneshotFP_noBorrow_indepTime"),

@@ -60,6 +60,7 @@ all_res <- list(
   oneshotFP_noBorrow = output$beta_mat_FP_noBorrow,
   oneshotFP_indepTime = output$beta_mat_FP_indepTime,
   oneshotFP_noBorrow_indepTime = output$beta_mat_FP_noBorrow_indepTime,
+  oneshotFP_heteroVar = output$beta_mat_FP_heteroVar,
   complete = output$beta_mat_complete,
   BFI = output$beta_mat_BFI,
   BFI_comp = output$beta_mat_BFI_comp,
