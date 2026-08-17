@@ -57,6 +57,8 @@ output <- main_func(
 
 all_res <- list(
   oneshotFP = output$beta_mat_FP,
+  oneshotFP_targetExact = output$beta_mat_FP_targetExact,
+  oneshotFP_likApprox = output$beta_mat_FP_likApprox,
   oneshotFP_noBorrow = output$beta_mat_FP_noBorrow,
   oneshotFP_indepTime = output$beta_mat_FP_indepTime,
   oneshotFP_noBorrow_indepTime = output$beta_mat_FP_noBorrow_indepTime,
