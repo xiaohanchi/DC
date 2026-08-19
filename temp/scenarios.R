@@ -85,6 +85,14 @@ active_time <- list(
     site5 = 5:8,
     site6_ctrl = 3:8,
     site6_trt = 8
+  ),
+  # 4 sites w/ 5 periods: additional test
+  list(
+    site1 = 1:3,
+    site2 = 2:4,
+    site3 = 3:4,
+    site4_ctrl = 2:5,
+    site4_trt = 5
   )
 )
 
