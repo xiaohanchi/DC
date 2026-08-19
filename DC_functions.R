@@ -639,12 +639,6 @@ MAP.func <- function(rawRWD, RCT.data, true.ctrl.s1, exp.all, trueRCT,
     prob.DCadj1 <- NA
     ATE.DCadj1 <- NA
     
-    prob.DCunadj.cf = NA
-    ATE.DCunadj.cf = NA
-    
-    prob.DCunadj.cf2 = NA
-    ATE.DCunadj.cf2 = NA
-    
   }
   
   
