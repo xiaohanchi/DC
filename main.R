@@ -42,7 +42,7 @@ all.config <- rbind(
     wt.rho.x = c(10), 
     wt.b.x = c(1), 
     wt.rho.y = 0.5,
-    wt.b.y = c(2, 2.5, 3),  
+    wt.b.y = 2.5,  
     w0.val = -1,
     Gphi.type = c(3), #, c(1, 2, 3), 
     outcome.type = c(1), 
