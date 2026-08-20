@@ -1,5 +1,6 @@
 rm(list = ls())
 Sys.setenv(RETICULATE_PYTHON = "/rsrch4/home/biostatistics/xchi/.conda/envs/xchi/bin/python")
+Sys.setenv(TABPFN_MODEL_CACHE_DIR = "/rsrch4/home/biostatistics/xchi/DCTwin/tabpfn-weights")
 library(reticulate)
 use_python(Sys.getenv("RETICULATE_PYTHON"), required = TRUE)
 reticulate::import("torch")
