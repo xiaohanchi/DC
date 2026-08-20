@@ -10,206 +10,110 @@ wt.func <- function(x, ref.stat = qnorm(1-0.025), rho = 10, b = 2, type = 2){
   } else if (type == 2) {
     a <- b/rho
     output <- 1/(1 + exp(a*abs(x) - b))
+  } else if (type == 3) {
+    a <- rho/(1 - rho)
+    num <- a * abs(x)^b
+    den <- num + (1 - abs(x))^b
+    output <- num / den
   }
   return(output)
 }
 
-data.transform <- function(x, range = c(), type = "unif_norm") {
-  # range: real unif limits when transforming data from std normal to (unscaled) uniform
-  if (type == "unif_norm") {
-    x.stdunif <- (x - min(x)) / (max(x) - min(x))
-    x.stdunif[x.stdunif == 1] <- 1 - 1e-5
-    x.stdunif[x.stdunif == 0] <- 1e-5
-    x.stdnorm <- qnorm(x.stdunif)
-    return(
-      list(x.trans = x.stdnorm)
-    )
-  } else if (type == "norm_unif") {
-    x.stdunif <- pnorm(x)
-    x.unif <- x.stdunif * diff(range) + range[1]
-    return(
-      list(x.trans = x.unif)
-    )
-  }
-}
-
 #### simulation func =============
-get.BN.weight <- function(data, bn.model, n_simu = 5000){
-  set.seed(2333)
-  if (ncol(data) > 1){
-    ll_RCT <- as.numeric(logLik(bn.model, data = data))
-    ll_sim <- sapply(1:n_simu, function(rr){
-      sim_data <- rbn(bn.model, n = nrow(data))  
-      ll <- as.numeric(logLik(bn.model, data = sim_data))
-    })
-  } else {
-    ll_RCT <- sum(dnorm(
-      data[[names(data)]], mean = bn.model[[names(data)]]$coefficients, 
-      sd = bn.model[[names(data)]]$sd, log = TRUE
-      ))
-    ll_sim <- sapply(1:n_simu, function(rr){
-      sim_data <- rbn(bn.model, n = nrow(data))  
-      ll <- sum(dnorm(
-        sim_data[[names(data)]], mean = bn.model[[names(data)]]$coefficients, 
-        sd = bn.model[[names(data)]]$sd, log = TRUE
-      ))
-    })
-  }
-  tail_prob <- 2 * min(c(mean(ll_sim < ll_RCT), mean(ll_sim > ll_RCT)))
-  
-  return(tail_prob)
+get.Gphi.weight <- function(data, Gphi.model, n_simu = 1000) {
+  X_v <- data.matrix(data)
+  X_tilde <- reticulate::py_to_r(
+    Gphi.model$generate_synthetic_data(
+      n_samples = as.integer(n_simu), t = 1, n_permutations = 2L
+    )$detach()$cpu()$numpy()
+  )
+  n_v <- nrow(X_v)
+  m_G <- nrow(X_tilde)
+  kappa_G <- 0.5
+  cross_d <- sqrt(pmax(
+    outer(rowSums(X_v^2), rowSums(X_tilde^2), "+") - 2 * tcrossprod(X_v, X_tilde),
+    0
+  ))
+  E_hat <- (2 / (n_v * m_G)) * sum(cross_d) -
+    (2 / n_v^2) * sum(dist(X_v)) -
+    (2 / m_G^2) * sum(dist(X_tilde))
+  D_hat <- E_hat / mean(dist(rbind(X_v, X_tilde)))
+  n_eff <- n_v * m_G / (n_v + m_G)
+  exp(-n_eff^kappa_G * D_hat)
 }
 
 digital.control <- function(rwd.data, exp.all, EHR.data, RCT.data, 
-                            synctrl.n, syn.nset, 
-                            trt.eff, seed, bn.type = c(1, 2, 3)) {
+                            synctrl.n, seed, Gphi.type = c(1, 2, 3)) {
   # synctrl.n: sample size of synthetic controls in stage 1 (e.g., 100)
-  # bn.type = 1 for using RCT + RWD data in structure learning; bn.type = 2 for using RCT data only
+  # Gphi.type = 1 for using RCT + RWD data in structure learning; Gphi.type = 2 for using RCT data only
   set.seed(seed)
   
   rwd.data <- rwd.data %>% select(-c(treatment))
   exp.data <- RCT.data %>% filter(treatment == 1)
   ctrl.data <- RCT.data %>% filter(treatment == 0)
   EHR.data <- EHR.data %>% select(-c(treatment, S, Y))
-  RCT.data.trans <- select(RCT.data, -c(treatment, S, Y))
   
-  ### BART prediction for DC: using only RWD
-  bart.model1 <- bart2(
-    Y ~ ., data = rwd.data, n.samples = 2500, n.chains = 4, keepTrees = TRUE,
-    combineChains = T, n.threads = 1, verbose = FALSE, 
+  ### TabPFN prediction for DC: using only RWD
+  pred.model <- tab_pfn(
+    Y ~ ., data = rwd.data, version = "v3", training_set_limit = Inf,
+    control = control_tab_pfn(device = "auto", n_preprocessing_jobs = 1L, ignore_pretraining_limits = TRUE)
   )
-  
-  ### DT of RCT control arm
   y.pred.dt <- predict(
-    bart.model1, (ctrl.data %>% select(-c(treatment, S, Y))), type = "ppd"
-  ) %>% colMeans()
+    pred.model, new_data = (ctrl.data %>% select(-c(treatment, S, Y)))
+  )$.pred
   
-  ### BN structure learning
-  if (bn.type == 1) {
-    bn.structure.data <- EHR.data
-    bn.transdata <- bn.data <- RCT.data %>% select(-c(treatment, S, Y))
-  } else if (bn.type == 2) {
-    bn.structure.data <- EHR.data
-    bn.transdata <- bn.data <- EHR.data
-  } else if (bn.type == 3) {
-    bn.structure.data <- bind_rows(
-      RCT.data %>% select(-c(treatment, S, Y)), rwd.data %>% select(-c(Y))
-    )
-    bn.transdata <- bn.data <- RCT.data %>% select(-c(treatment, S, Y))
+  ### TabPFN for X covariates (same training X as BN parameter learning)
+  if (Gphi.type == 1) {
+    Gphi.data <- RCT.data %>% select(-c(treatment, S, Y))
+  } else if (Gphi.type == 2) {
+    Gphi.data <- EHR.data
+  } else if (Gphi.type == 3) {
+    Gphi.data <- RCT.data %>% select(-c(treatment, S, Y))
   }
-  ### data transformation
-  coltype <- sapply(1:ncol(bn.data), function(r) class(data.frame(bn.data)[, r]))
-  if (sum(coltype != "numeric") == 3) {
-    for (ii in c(1:ncol(bn.data))[coltype == "numeric"]) {
-      bn.transdata[, ii] <- data.transform(pull(bn.data[, ii]), type = "unif_norm")
-      RCT.data.trans[, ii] <- data.transform(pull(RCT.data.trans[, ii]), type = "unif_norm")
-    }
-  } else if (sum(coltype != "numeric") == 2) {
-    if (any(grepl("X4", colnames(bn.data)))) {
-      bn.transdata["X4"] <- data.transform(bn.data$X4, type = "unif_norm")
-      RCT.data.trans["X4"] <- data.transform(RCT.data.trans$X4, type = "unif_norm")
-    }
-    if (any(grepl("X5", colnames(bn.data)))) {
-      bn.transdata["X5"] <- data.transform(bn.data$X5, type = "unif_norm") 
-      RCT.data.trans["X5"] <- data.transform(RCT.data.trans$X5, type = "unif_norm") 
-    }
-  }
-  
-  # bn.struct: learned from current data
-  bn.struct <- pc.stable(bn.structure.data %>% data.frame(), undirected = TRUE)
-  bn.order <- rev(colnames(bn.transdata))
-  if (any(grepl("mis", bn.order))) {
-    bn.order <- c(bn.order[-grep("mis", bn.order)], bn.order[grep("mis", bn.order)])
-  }
-  bn.struct <- pdag2dag(bn.struct, ordering = bn.order)
-  
-  ### BN parameter learning
-  # exp.motbf2: learned from stage 1 exp data & stage 2 RCT
+  coltype <- sapply(1:ncol(Gphi.data), function(r) class(data.frame(Gphi.data)[, r]))
   rwd.data <- rwd.data %>% data.frame()
-  if (all(coltype == "numeric")) {
-    bn.model <- bn.fit(bn.struct, data = data.frame(bn.transdata), method = "mle-g")
-  } else {
-    bn.model <- bn.fit(bn.struct, data = data.frame(bn.transdata), method = "mle-cg")
+  tabpfn_py <- reticulate::import("tabpfn")
+  Gphi.model <- reticulate::import("tabpfn_extensions.unsupervised")$TabPFNUnsupervisedModel(
+    tabpfn_clf = tabpfn_py$TabPFNClassifier(device = "auto"),
+    tabpfn_reg = tabpfn_py$TabPFNRegressor(device = "auto")
+  )
+  X <- data.matrix(Gphi.data)
+  disc_col <- which(apply(X, 2, function(z) length(unique(z)) <= 10L))
+  if (length(disc_col)) {
+    X[, disc_col] <- sweep(X[, disc_col, drop = FALSE], 2, apply(X[, disc_col, drop = FALSE], 2, min))
+    Gphi.model$set_categorical_features(as.list(as.integer(disc_col - 1L)))
   }
-  
-  ### get the BN model weight
-  bn.pval <- get.BN.weight(data = data.frame(RCT.data.trans), bn.model = bn.model)
-  
-  ### generate 100 datasets
-  # bn.ctrl2
-  bn.ctrl2 <- list()
-  idx <- 0
-  while (idx < syn.nset) {
-    set.seed(233 * idx + 1234)
-    bn.transtmp <- bn.tmp <- rbn(bn.model, n = synctrl.n) %>% tibble()
-    if (sum(coltype != "numeric") == 3) {
-      # transform back
-      for (ii in c(1:ncol(bn.tmp))[coltype == "numeric"]) {
-        bn.transtmp[, ii] <- data.transform(
-          pull(bn.tmp[, ii]),
-          range = c(min(bn.data[, ii]), max(bn.data[, ii])),
-          type = "norm_unif"
-        )
-      }
-      bn.transtmp <- bn.transtmp %>%
-        mutate(X5 = factor(X5), X6 = factor(X6), X7 = factor(X7))
-    } else if (sum(coltype != "numeric") == 2) {
-      if (any(grepl("X4", colnames(bn.data)))) {
-        bn.transtmp["X4"] <- data.transform(
-          bn.tmp$X4,
-          range = c(min(bn.data$X4), max(bn.data$X4)),
-          type = "norm_unif"
-        )
-      }
-      if (any(grepl("X5", colnames(bn.data)))) {
-        bn.transtmp["X5"] <- data.transform(
-          bn.tmp$X5,
-          range = c(min(bn.data$X5), max(bn.data$X5)),
-          type = "norm_unif"
-        )
-      }
-      bn.transtmp <- bn.transtmp %>% mutate(X6 = factor(X6), X7 = factor(X7))
-    }
-    bn.ctrl2 <- list.append(bn.ctrl2, bn.transtmp)
-    idx <- idx + 1
+  Gphi.model$fit(X)
+    
+  ### generate X
+  Gphi.ctrl2 <- as_tibble(
+    reticulate::py_to_r(
+      Gphi.model$generate_synthetic_data(n_samples = as.integer(synctrl.n), t = 1, n_permutations = 2L)$detach()$cpu()$numpy()
+    ),
+    .name_repair = ~ names(Gphi.data)
+  )
+  if (sum(coltype != "numeric") == 3) {
+    Gphi.ctrl2  <- Gphi.ctrl2 %>%
+      mutate(X5 = factor(X5), X6 = factor(X6), X7 = factor(X7))
+  } else if (sum(coltype != "numeric") == 2) {
+    Gphi.ctrl2 <- Gphi.ctrl2 %>% mutate(X6 = factor(X6), X7 = factor(X7))
   }
-  
-  output <- lapply(1:syn.nset, function(rr) {
-    set.seed(10*rr)
-    bart.pred <- predict(bart.model1, data.frame(bn.ctrl2[[rr]]), type = "ppd")
-    rdm.idx <- sample(1:nrow(bart.pred), ncol(bart.pred), replace = TRUE)
-    y.pred.syn1 <- sapply(1:synctrl.n, function(r) bart.pred[rdm.idx[r], r])
-    return(list(y.pred.syn1))
-  })
-  y.pred.syn1 <- sapply(1:syn.nset, function(r) output[[r]][[1]])
+
+  full_out <- pred.model$fit$predict(
+    hardhat::forge(as.data.frame(Gphi.ctrl2), pred.model$blueprint)$predictors,
+    output_type = "full"
+  )
+  y.pred.syn1 <- matrix(as.numeric(full_out$criterion$sample(full_out$logits)$cpu()$numpy()), ncol = 1)
   
   return(list(
-    bn.pval = bn.pval,
-    DC.groups = bn.ctrl2,
+    Gphi.model = Gphi.model, 
+    Gphi.ctrl2 = Gphi.ctrl2,
     y.pred.dt = y.pred.dt, 
     y.pred.syn1 = y.pred.syn1
   ))
 }
-get.mu.pred <- function(y.pred, prior.shrinkage) {
-  jagsdata <- list(
-    Ngroup = ncol(y.pred),
-    ybar_syn = colMeans(y.pred),
-    tau_syn = (nrow(y.pred))/apply(y.pred, MARGIN = 2, var),
-    tau_pred = median((nrow(y.pred))/apply(y.pred, MARGIN = 2, var))
-  )
-  jagsmodel <- run.jags(
-    model = str_replace(BHM.pred, "prior_to_be_defined", prior.shrinkage),
-    monitor = c("ybar_pred"),
-    data = jagsdata, n.chains = 4,
-    adapt = 1000, burnin = 4000, sample = 5000, summarise = FALSE, thin = 2,
-    method = "rjags", plots = FALSE, silent.jags = T,
-    inits = lapply((c(1:4) * 100 + 123), function(s) list(.RNG.name = "base::Mersenne-Twister", .RNG.seed = s))
-  )
-  ybar_pred <- as.mcmc.list(jagsmodel, "ybar_pred") %>% as.matrix()
-  return(ybar_pred)
-}
 
-get.DC.ATE <- function(jagsmodel, RCT.data, type){
+get.DC.ATE <- function(jagsmodel, RCT.data, type, cross.fit = FALSE){
   var.name <- ifelse(type == 1, "y_rct_pred", "p_rct_pred")
   y.pred0.sample <- as.mcmc.list(
     jagsmodel,
@@ -225,20 +129,27 @@ get.DC.ATE <- function(jagsmodel, RCT.data, type){
   y.pred1.dist <- as.vector(y.pred1.sample %*% t(weight))
   
   ATE.mcmc <- y.pred1.dist - y.pred0.dist
-  results <- c(
-    prob = 2 * min(mean(ATE.mcmc < 0), mean(ATE.mcmc > 0)), 
-    ATE = mean(ATE.mcmc)
+  if (!cross.fit) {
+    results <- c(
+      prob = 2 * min(mean(ATE.mcmc < 0), mean(ATE.mcmc > 0)), 
+      ATE = mean(ATE.mcmc)
     )
+  } else if (cross.fit) {
+    results <- list(
+      ATE.mcmc = ATE.mcmc
+    )
+  }
   return(results)
 }
 
 #### MAP function ======
-MAP.func <- function(rawRWD, RCT.data, true.ctrl.s1, exp.all, trueRCT, 
-                     prior.var0, prior.shrinkage = "dunif(0, 100)",
-                     wt.rho.x, wt.b.x, wt.rho.y, wt.b.y, wt.type, 
-                     bn.pval, DC.groups, y.pred.dt, y.pred.syn1, 
-                     methods = c("full", "selected")) {
-  # prior.var0: sigma0^2 value for the non-informative part in the mixture prior
+MAP.func <- function(rawRWD, RCT.data, true.ctrl.s1, exp.all, 
+                     var0.ess, wt.rho.x, wt.b.x, wt.rho.y, wt.b.y, wt.type, w0.val, 
+                     RCT.data.trans, Gphi.model, DC.groups, y.pred.dt, y.pred.syn1, 
+                     methods = c("full", "selected"), seed) {
+  # var0.ess: sigma0^2 ESS value for the non-informative part in the mixture prior
+  # w0.val: = 2 or 3 for varying weighting function
+  set.seed(seed)
   methods <- match.arg(methods)
   runjags.options(silent.jags = TRUE, silent.runjags = TRUE, inits.warning = FALSE)
   
@@ -252,30 +163,37 @@ MAP.func <- function(rawRWD, RCT.data, true.ctrl.s1, exp.all, trueRCT,
   
   ######################################## DC ########################################
   
-  # get weights from ML models
+  # get weights from ML models: self-validation
   wt.para <- c()
   t_stat <- t.test(y.pred.dt, ctrl.data$Y, paired = TRUE)$statistic
-  pval <- 2*(1 - pnorm(t_stat * length(y.pred.dt)^(-0.01)))
+  pval <- 2*(1 - pnorm(abs(t_stat) * length(y.pred.dt)^(-0.01)))
+  wt.para[1] <- wt.func(x = pval, ref.stat = (1 - 0.05), rho = wt.rho.y, b = wt.b.y, type = wt.type)
   
-  wt.para[1] <- wt.func(x = (1 - pval), ref.stat = (1 - 0.05), rho = wt.rho.y, b = wt.b.y, type = wt.type)
-  wt.para[2] <- wt.func(x = (1 - bn.pval), ref.stat = (1 - 0.05), rho = wt.rho.y, b = wt.b.y, type = wt.type)
-  if(wt.para[1]<1e-12) wt.para[1] <- 1e-12
-  if(wt.para[2]<1e-12) wt.para[2] <- 1e-12
+  Gphi.pval <- get.Gphi.weight(
+    data = RCT.data %>% select(-c(treatment, S, Y)), Gphi.model = Gphi.model
+  )
+  wt.para[2] <- wt.func(x = Gphi.pval, ref.stat = (1 - 0.05), rho = wt.rho.y, b = wt.b.y, type = wt.type)
   
-  ### ATE: DC_unadj_v2: given prior
+  wt.para <- pmax(wt.para, 1e-12)
+  
   if(outcome.type == 1) {
+    ### DC_unadj_v2: std
     jagsdata <- list(
-      Ngroup = ncol(y.pred.syn1),
-      ybar_syn = colMeans(y.pred.syn1),
-      tau_syn = (nrow(y.pred.syn1))/apply(y.pred.syn1, MARGIN = 2, var),
+      ybar_syn = as.numeric(colMeans(y.pred.syn1)),
       N_RCT = nrow(RCT.data),
-      var0 = max(median(apply(y.pred.syn1, MARGIN = 2, var)), var(RCT.data$Y))/(nrow(y.pred.syn1)), 
+      var0 = max(median(apply(y.pred.syn1, MARGIN = 2, var)), var(RCT.data$Y))/nrow(ctrl.data), 
+      var_dist0 =  max(median(apply(y.pred.syn1, MARGIN = 2, var)), var(RCT.data$Y))/var0.ess,
       y_rct = RCT.data$Y, 
       treatment = RCT.data$treatment, 
-      w0 = min(wt.para)
+      w0 = case_when(
+        w0.val == -1 ~ min(wt.para),
+        w0.val == 2 ~ wt.para[1],
+        w0.val == 3 ~ wt.para[2],
+        TRUE ~ w0.val
+      )
     )
     jagsmodel <- run.jags(
-      model = str_replace(unadjMAP.normal, "prior_to_be_defined", prior.shrinkage), 
+      model = unadjMAP.normal, 
       monitor = c("mu_ctrl", "beta_trt", "y_rct_pred"), 
       data = jagsdata, n.chains = 4, 
       adapt = 1000, burnin = 4000, sample = 5000, summarise = FALSE, thin = 2, 
@@ -289,20 +207,24 @@ MAP.func <- function(rawRWD, RCT.data, true.ctrl.s1, exp.all, trueRCT,
     
     ### ATE: DC_adj_v1
     jagsdata <- list(
-      Ngroup = ncol(y.pred.syn1),
-      ybar_syn = colMeans(y.pred.syn1),
-      tau_syn = (nrow(y.pred.syn1))/apply(y.pred.syn1, MARGIN = 2, var),
+      ybar_syn = as.numeric(colMeans(y.pred.syn1)),
       N_RCT = nrow(RCT.data),
       P = sum(grepl("X", colnames(RCT.data))), 
-      var0 = max(median(apply(y.pred.syn1, MARGIN = 2, var)), var(RCT.data$Y))/(nrow(y.pred.syn1)), 
+      var0 = max(median(apply(y.pred.syn1, MARGIN = 2, var)), var(RCT.data$Y))/nrow(ctrl.data), 
+      var_dist0 = max(median(apply(y.pred.syn1, MARGIN = 2, var)), var(RCT.data$Y))/var0.ess,
       y_rct = RCT.data$Y, 
       treatment = RCT.data$treatment, 
-      w0 = min(wt.para),
+      w0 = case_when(
+        w0.val == -1 ~ min(wt.para),
+        w0.val == 2 ~ wt.para[1],
+        w0.val == 3 ~ wt.para[2],
+        TRUE ~ w0.val
+      ),
       X = (apply(as.matrix(RCT.data), c(1, 2), as.numeric)[, grep("X", names(RCT.data)), drop = FALSE])
     )
     
     jagsmodel <- run.jags(
-      model = str_replace(adjMAP.normal, "prior_to_be_defined", prior.shrinkage), 
+      model = adjMAP.normal, 
       monitor = c("mu_ctrl", "beta_trt", "y_rct_pred"), 
       data = jagsdata, n.chains = 4, 
       adapt = 1000, burnin = 4000, sample = 5000, summarise = FALSE, thin = 2, 
@@ -314,31 +236,34 @@ MAP.func <- function(rawRWD, RCT.data, true.ctrl.s1, exp.all, trueRCT,
     prob.DCadj1 <- res.tmp["prob"]
     ATE.DCadj1 <- res.tmp["ATE"]
     
-    ### ATE: DC_twin
-    prog.model <- bart2(
-      Y ~ ., data = RWD,  n.trees = 150, n.samples = 2500, n.chains = 4,
-      keepTrees = TRUE, combineChains = T, n.threads = 1, verbose = FALSE, seed = 233
+    ### ATE: DC_twin: only use m(x) in covariate adjustment
+    prog.model <- tab_pfn(
+      Y ~ ., data = RWD, version = "v3", training_set_limit = Inf,
+      control = control_tab_pfn(device = "auto", n_preprocessing_jobs = 1L, ignore_pretraining_limits = TRUE)
     )
     prog.score <- predict(
-      prog.model, (RCT.data %>% select(-c(S, treatment, Y)))
-    ) %>% colMeans()
-
+      prog.model, new_data = (RCT.data %>% select(-c(S, treatment, Y)))
+    )$.pred
+    
     jagsdata <- list(
-      Ngroup = ncol(y.pred.syn1),
-      ybar_syn = colMeans(y.pred.syn1),
-      tau_syn = (nrow(y.pred.syn1))/apply(y.pred.syn1, MARGIN = 2, var),
+      ybar_syn = as.numeric(colMeans(y.pred.syn1)),
       N_RCT = nrow(RCT.data),
-      P = (sum(grepl("X", colnames(RCT.data))) + 1), 
-      var0 = max(median(apply(y.pred.syn1, MARGIN = 2, var)), var(RCT.data$Y))/(nrow(y.pred.syn1)), 
+      P = 1, 
+      var0 = max(median(apply(y.pred.syn1, MARGIN = 2, var)), var(RCT.data$Y))/nrow(ctrl.data), 
+      var_dist0 = max(median(apply(y.pred.syn1, MARGIN = 2, var)), var(RCT.data$Y))/var0.ess,
       y_rct = RCT.data$Y, 
       treatment = RCT.data$treatment, 
-      w0 = min(wt.para),
-      X = cbind((apply(as.matrix(RCT.data), c(1, 2), as.numeric)[, grep("X", names(RCT.data)), drop = FALSE]),
-                prog.score)
+      w0 = case_when(
+        w0.val == -1 ~ min(wt.para),
+        w0.val == 2 ~ wt.para[1],
+        w0.val == 3 ~ wt.para[2],
+        TRUE ~ w0.val
+      ),
+      X = cbind(prog.score)
     )
     
     jagsmodel <- run.jags(
-      model = str_replace(adjMAP.normal, "prior_to_be_defined", prior.shrinkage), 
+      model = adjMAP.normal, 
       monitor = c("mu_ctrl", "beta_trt", "y_rct_pred"), 
       data = jagsdata, n.chains = 4, 
       adapt = 1000, burnin = 4000, sample = 5000, summarise = FALSE, thin = 2, 
@@ -349,49 +274,27 @@ MAP.func <- function(rawRWD, RCT.data, true.ctrl.s1, exp.all, trueRCT,
     res.tmp <- get.DC.ATE(jagsmodel = jagsmodel, RCT.data = RCT.data, type = outcome.type)
     prob.DCtwin <- res.tmp["prob"]
     ATE.DCtwin <- res.tmp["ATE"]
-    
-    ### ATE: DC_twin2: only use m(x) in covariate adjustment
-    jagsdata <- list(
-      Ngroup = ncol(y.pred.syn1),
-      ybar_syn = colMeans(y.pred.syn1),
-      tau_syn = (nrow(y.pred.syn1))/apply(y.pred.syn1, MARGIN = 2, var),
-      N_RCT = nrow(RCT.data),
-      P = 1, 
-      var0 = max(median(apply(y.pred.syn1, MARGIN = 2, var)), var(RCT.data$Y))/(nrow(y.pred.syn1)), 
-      y_rct = RCT.data$Y, 
-      treatment = RCT.data$treatment, 
-      w0 = min(wt.para),
-      X = cbind(prog.score)
-    )
-    
-    jagsmodel <- run.jags(
-      model = str_replace(adjMAP.normal, "prior_to_be_defined", prior.shrinkage), 
-      monitor = c("mu_ctrl", "beta_trt", "y_rct_pred"), 
-      data = jagsdata, n.chains = 4, 
-      adapt = 1000, burnin = 4000, sample = 5000, summarise = FALSE, thin = 2, 
-      method = "rjags", plots = FALSE, silent.jags = T, 
-      inits = lapply((c(1:4) * 100 + 123), function(s) list(.RNG.name = "base::Mersenne-Twister", .RNG.seed = s))
-    )
-    
-    res.tmp <- get.DC.ATE(jagsmodel = jagsmodel, RCT.data = RCT.data, type = outcome.type)
-    prob.DCtwin2 <- res.tmp["prob"]
-    ATE.DCtwin2 <- res.tmp["ATE"]
-    
-    
     
   } else if (outcome.type == 2) {
+    
+    # to be updated
+    
     jagsdata <- list(
-      Ngroup = ncol(y.pred.syn1),
-      ysum_syn = colSums(y.pred.syn1),
-      n_dc = nrow(y.pred.syn1), 
+      ybar_syn = logit(as.numeric(pmin(pmax(colMeans(y.pred.syn1), 1e-6), 1 - 1e-6))),
       N_RCT = nrow(RCT.data),
-      var0 = 1/(max(median(apply(y.pred.syn1, MARGIN = 2, var)), var(ctrl.data$Y)) * nrow(y.pred.syn1)), 
+      var0 = 1/(max(median(apply(y.pred.syn1, MARGIN = 2, var)), var(RCT.data$Y)) * nrow(y.pred.syn1)), 
+      var_dist0 = 1/(max(median(apply(y.pred.syn1, MARGIN = 2, var)), var(RCT.data$Y)) * var0.ess),
       y_rct = RCT.data$Y, 
       treatment = RCT.data$treatment, 
-      w0 = min(wt.para)
+      w0 = case_when(
+        w0.val == -1 ~ min(wt.para),
+        w0.val == 2 ~ wt.para[1],
+        w0.val == 3 ~ wt.para[2],
+        TRUE ~ w0.val
+      )
     )
     jagsmodel <- run.jags(
-      model = str_replace(unadjMAP.binary, "prior_to_be_defined", prior.shrinkage), 
+      model = unadjMAP.binary, 
       monitor = c("mu_ctrl", "beta_trt", "p_rct_pred"), 
       data = jagsdata, n.chains = 4, 
       adapt = 1000, burnin = 4000, sample = 5000, summarise = FALSE, thin = 2, 
@@ -404,95 +307,11 @@ MAP.func <- function(rawRWD, RCT.data, true.ctrl.s1, exp.all, trueRCT,
     ATE.DCunadj2 <- res.tmp["ATE"]
     
     ### ATE: DC_adj_v1
-    jagsdata <- list(
-      Ngroup = ncol(y.pred.syn1),
-      ysum_syn = colSums(y.pred.syn1),
-      n_dc = nrow(y.pred.syn1), 
-      N_RCT = nrow(RCT.data),
-      P = sum(grepl("X", colnames(RCT.data))), 
-      var0 = 1/(max(median(apply(y.pred.syn1, MARGIN = 2, var)), var(ctrl.data$Y)) * nrow(y.pred.syn1)), 
-      y_rct = RCT.data$Y, 
-      treatment = RCT.data$treatment, 
-      w0 = min(wt.para),
-      X = (apply(as.matrix(RCT.data), c(1, 2), as.numeric)[, grep("X", names(RCT.data)), drop = FALSE])
-    )
+    prob.DCadj1 <- NA
+    ATE.DCadj1 <- NA
     
-    jagsmodel <- run.jags(
-      model = str_replace(adjMAP.binary, "prior_to_be_defined", prior.shrinkage), 
-      monitor = c("mu_ctrl", "beta_trt", "p_rct_pred"), 
-      data = jagsdata, n.chains = 4, 
-      adapt = 1000, burnin = 4000, sample = 5000, summarise = FALSE, thin = 2, 
-      method = "rjags", plots = FALSE, silent.jags = T, 
-      inits = lapply((c(1:4) * 100 + 123), function(s) list(.RNG.name = "base::Mersenne-Twister", .RNG.seed = s))
-    )
-    
-    res.tmp <- get.DC.ATE(jagsmodel = jagsmodel, RCT.data = RCT.data, type = outcome.type)
-    prob.DCadj1 <- res.tmp["prob"]
-    ATE.DCadj1 <- res.tmp["ATE"]
-    
-    ### ATE: DC_twin
-    prog.model <- bart2(
-      Y ~ ., data = RWD,  n.trees = 150, n.samples = 2500, n.chains = 4,
-      keepTrees = TRUE, combineChains = T, n.threads = 1, verbose = FALSE, seed = 233
-    )
-    prog.score <- predict(
-      prog.model, (RCT.data %>% select(-c(S, treatment, Y)))
-    ) %>% colMeans()
-    
-    jagsdata <- list(
-      Ngroup = ncol(y.pred.syn1),
-      ysum_syn = colSums(y.pred.syn1),
-      n_dc = nrow(y.pred.syn1), 
-      N_RCT = nrow(RCT.data),
-      P = 1, 
-      var0 = 1/(max(median(apply(y.pred.syn1, MARGIN = 2, var)), var(ctrl.data$Y)) * nrow(y.pred.syn1)), 
-      y_rct = RCT.data$Y, 
-      treatment = RCT.data$treatment, 
-      w0 = min(wt.para),
-      X = cbind(prog.score)
-    )
-    
-    jagsmodel <- run.jags(
-      model = str_replace(adjMAP.binary, "prior_to_be_defined", prior.shrinkage), 
-      monitor = c("mu_ctrl", "beta_trt", "p_rct_pred"), 
-      data = jagsdata, n.chains = 4, 
-      adapt = 1000, burnin = 4000, sample = 5000, summarise = FALSE, thin = 2, 
-      method = "rjags", plots = FALSE, silent.jags = T, 
-      inits = lapply((c(1:4) * 100 + 123), function(s) list(.RNG.name = "base::Mersenne-Twister", .RNG.seed = s))
-    )
-    
-    res.tmp <- get.DC.ATE(jagsmodel = jagsmodel, RCT.data = RCT.data, type = outcome.type)
-    prob.DCtwin <- res.tmp["prob"]
-    ATE.DCtwin <- res.tmp["ATE"]
-    
-    ### ATE: DC_twin2: logit(m) as prog score
-  
-    jagsdata <- list(
-      Ngroup = ncol(y.pred.syn1),
-      ysum_syn = colSums(y.pred.syn1),
-      n_dc = nrow(y.pred.syn1), 
-      N_RCT = nrow(RCT.data),
-      P = 1, 
-      var0 = 1/(max(median(apply(y.pred.syn1, MARGIN = 2, var)), var(ctrl.data$Y)) * nrow(y.pred.syn1)), 
-      y_rct = RCT.data$Y, 
-      treatment = RCT.data$treatment, 
-      w0 = min(wt.para),
-      X = cbind(logit(prog.score)) ##
-    )
-    
-    jagsmodel <- run.jags(
-      model = str_replace(adjMAP.binary, "prior_to_be_defined", prior.shrinkage), 
-      monitor = c("mu_ctrl", "beta_trt", "p_rct_pred"), 
-      data = jagsdata, n.chains = 4, 
-      adapt = 1000, burnin = 4000, sample = 5000, summarise = FALSE, thin = 2, 
-      method = "rjags", plots = FALSE, silent.jags = T, 
-      inits = lapply((c(1:4) * 100 + 123), function(s) list(.RNG.name = "base::Mersenne-Twister", .RNG.seed = s))
-    )
-    
-    res.tmp <- get.DC.ATE(jagsmodel = jagsmodel, RCT.data = RCT.data, type = outcome.type)
-    prob.DCtwin2 <- res.tmp["prob"]
-    ATE.DCtwin2 <- res.tmp["ATE"]
-    
+    prob.DCtwin <- NA
+    ATE.DCtwin <- NA
     
   }
   
@@ -527,7 +346,7 @@ MAP.func <- function(rawRWD, RCT.data, true.ctrl.s1, exp.all, trueRCT,
     
     for (ii in 5:1) {
       pspp.try <- try(ATE.pspp(
-        pspp.data = pspp.data, strata.n = ii, borrow.n = nrow(y.pred.syn1), 
+        pspp.data = pspp.data, strata.n = ii, borrow.n = nrow(ctrl.data), 
         type = 1, outcome.type = ifelse(outcome.type == 1, "continuous", "binary")
       ), silent = TRUE)
       if (!("try-error" %in% class(pspp.try))) break
@@ -539,7 +358,7 @@ MAP.func <- function(rawRWD, RCT.data, true.ctrl.s1, exp.all, trueRCT,
     for (ii in 5:1) {
       psmap.try <- try(ATE.psmap(
         hist.data = RWD, current.ctrl = ctrl.data, current.trt = exp.all,
-        MAP_ESS = nrow(y.pred.syn1), S = ii, showESS = FALSE, type = 1, outcome.type = outcome.type
+        MAP_ESS = nrow(ctrl.data), S = ii, showESS = FALSE, type = 1, outcome.type = outcome.type
       ), silent = TRUE)
       if (!("try-error" %in% class(psmap.try))) break
     }
@@ -553,41 +372,47 @@ MAP.func <- function(rawRWD, RCT.data, true.ctrl.s1, exp.all, trueRCT,
     ATE.pwmem <- tmp.pwmem$ATE
     prob.pwmem <- tmp.pwmem$Prob
     
-    ### ATE: PS-SAM (CSD = 0.2, 0.4, 0.8); 1-3: borrow n_ctrl patients
-    ps.data <- bind_rows(
-      (ctrl.data %>% mutate(label = 1, arm = 0)),
-      (RWD %>% mutate(label = 0, arm = 0))
-    )
+    ### ATE: PS-SAM (CSD = 0.4) 
+    # 3: 2-fold cross fitting
+    idx2_0 <- sample(1:nrow(RWD), (nrow(RWD)/2), replace = FALSE)
+    idx3_0 <- sample(1:nrow(ctrl.data), (nrow(ctrl.data)/2), replace = FALSE)
+    idx4_0 <- sample(1:nrow(exp.all), (nrow(exp.all)/2), replace = FALSE)
+    for (fold in 1:2) {
+      if(fold == 1) {
+        idx2 <- idx2_0
+        idx3 <- idx3_0
+        idx4 <- idx4_0
+      } else {
+        idx2 <- setdiff(1:nrow(RWD), idx2_0)
+        idx3 <- setdiff(1:nrow(ctrl.data), idx3_0)
+        idx4 <- setdiff(1:nrow(exp.all), idx4_0)
+      }
+      RCT.subset <- bind_rows(
+        (ctrl.data[-idx3, ] %>% mutate(label = 1, arm = 0)),
+        (exp.all[-idx4, ] %>% mutate(label = 1, arm = 1))
+      ) %>% dplyr::sample_n(nrow(ctrl.data)/2, replace = TRUE)
+      ps.data <- bind_rows(RCT.subset, (RWD %>% mutate(label = 0, arm = 0)))
+      tmp.pssam <- ATE.pssam.cf(
+        ps.data = ps.data, ctrl.data.valid = ctrl.data[-idx3, ], ctrl.data.est = ctrl.data[idx3, ], 
+        exp.data = exp.all[idx4, ], sigma = sd(RWD$Y), eff.size = ifelse(outcome.type == 1, 0.4, 0.15), 
+        outcome.type = outcome.type
+      )
+      if (fold == 1) {
+        ATE.mcmc <- tmp.pssam$ATE.mcmc
+      } else {
+        ATE.mcmc <- cbind(ATE.mcmc, tmp.pssam$ATE.mcmc)
+      }
+    }
+    ATE.mcmc.pool <- rowMeans(ATE.mcmc)
+    prob.pssam3 = 2 * min(mean(ATE.mcmc.pool < 0), mean(ATE.mcmc.pool > 0))
+    ATE.pssam3 = mean(ATE.mcmc.pool)
     
-    tmp.pssam <- ATE.pssam(
-      ps.data = ps.data, ctrl.data = ctrl.data, exp.data = exp.all, 
-      sigma = sd(RWD$Y), eff.size = ifelse(outcome.type == 1, 0.2, 0.1), 
-      outcome.type = outcome.type
-    )
-    ATE.pssam1 <- tmp.pssam$ATE
-    prob.pssam1 <- tmp.pssam$Prob
-    
-    tmp.pssam <- ATE.pssam(
-      ps.data = ps.data, ctrl.data = ctrl.data, exp.data = exp.all, 
-      sigma = sd(RWD$Y), eff.size = ifelse(outcome.type == 1, 0.4, 0.15), 
-      outcome.type = outcome.type
-    )
-    ATE.pssam2 <- tmp.pssam$ATE
-    prob.pssam2 <- tmp.pssam$Prob
-    
-    tmp.pssam <- ATE.pssam(
-      ps.data = ps.data, ctrl.data = ctrl.data, exp.data = exp.all, 
-      sigma = sd(RWD$Y), eff.size = ifelse(outcome.type == 1, 0.8, 0.2), 
-      outcome.type = outcome.type
-    )
-    ATE.pssam3 <- tmp.pssam$ATE
-    prob.pssam3 <- tmp.pssam$Prob
     
     # 4: borrow n_dc patients
     RCT.subset <- bind_rows(
       (ctrl.data %>% mutate(label = 1, arm = 0)),
       (exp.all %>% mutate(label = 1, arm = 1))
-    ) %>% dplyr::sample_n(nrow(y.pred.syn1), replace = TRUE)
+    ) %>% dplyr::sample_n(nrow(ctrl.data), replace = TRUE)
     
     ps.data <- bind_rows(RCT.subset, (RWD %>% mutate(label = 0, arm = 0)))
     tmp.pssam <- ATE.pssam(
@@ -634,6 +459,7 @@ MAP.func <- function(rawRWD, RCT.data, true.ctrl.s1, exp.all, trueRCT,
       ATE.procova <- mean(predict(procova.fit, newdata = (procova.data %>% mutate(treatment = 1)), type = "response")) - mean(predict(procova.fit, newdata = (procova.data %>% mutate(treatment = 0)), type = "response"))
       pval.procova <- coef(summary(procova.fit))["treatment", "Pr(>|z|)"]
     }
+    
     
     # 
     # ### ATE: PROCOVA.rct (only use RCT data)
@@ -744,15 +570,12 @@ MAP.func <- function(rawRWD, RCT.data, true.ctrl.s1, exp.all, trueRCT,
       ATE.pspp1 = ATE.pspp1,
       ATE.psmap1 = ATE.psmap1,
       ATE.pwmem = ATE.pwmem,
-      ATE.pssam1 = ATE.pssam1, 
-      ATE.pssam2 = ATE.pssam2, 
       ATE.pssam3 = ATE.pssam3, 
       ATE.pssam4 = ATE.pssam4, 
       # ATE.DCunadj1 = ATE.DCunadj1,
       ATE.DCunadj2 = ATE.DCunadj2,
       ATE.DCadj1 = ATE.DCadj1,
       ATE.DCtwin = ATE.DCtwin, 
-      ATE.DCtwin2 = ATE.DCtwin2, 
       ATE.anova = ATE.anova,
       ATE.anova2 = ATE.anova2,
       # ATE.anova3 = ATE.anova3,
@@ -772,15 +595,12 @@ MAP.func <- function(rawRWD, RCT.data, true.ctrl.s1, exp.all, trueRCT,
       prob.pspp1 = prob.pspp1,
       prob.psmap1 = prob.psmap1,
       prob.pwmem = prob.pwmem,
-      prob.pssam1 = prob.pssam1, 
-      prob.pssam2 = prob.pssam2, 
       prob.pssam3 = prob.pssam3, 
       prob.pssam4 = prob.pssam4, 
       # prob.DCunadj1 = prob.DCunadj1,
       prob.DCunadj2 = prob.DCunadj2,
       prob.DCadj1 = prob.DCadj1,
       prob.DCtwin = prob.DCtwin,
-      prob.DCtwin2 = prob.DCtwin2,
       pval.anova = pval.anova,
       pval.anova2 = pval.anova2,
       # pval.anova3 = pval.anova3,
@@ -799,12 +619,12 @@ MAP.func <- function(rawRWD, RCT.data, true.ctrl.s1, exp.all, trueRCT,
       ATE.ancova = ATE.ancova,
       ATE.DCunadj2 = ATE.DCunadj2,
       ATE.DCadj1 = ATE.DCadj1,
-      ATE.DCtwin = ATE.DCtwin, 
+      ATE.DCtwin = ATE.DCtwin,
       pval = pval
     )
     prob.res <- tibble(
       pval.anova = pval.anova,
-      pval.anova2 = pval.anov2,
+      pval.anova2 = pval.anova2,
       pval.ancova = pval.ancova,
       prob.DCunadj2 = prob.DCunadj2,
       prob.DCadj1 = prob.DCadj1,
@@ -818,20 +638,19 @@ MAP.func <- function(rawRWD, RCT.data, true.ctrl.s1, exp.all, trueRCT,
 
 
 ### MAIN function ==================================
-MAIN.func <- function(rwd.n, exp.n, EHR.n, synctrl.n, trt.eff, bias.c, syn.nset,
-                      scenario, prior.var0, prior.shrinkage, 
-                      wt.rho.x, wt.b.x, wt.rho.y, wt.b.y, wt.type, 
+MAIN.func <- function(rwd.n, exp.n, EHR.n, synctrl.n, trt.eff, bias.c,
+                      scenario, var0.ess, 
+                      wt.rho.x, wt.b.x, wt.rho.y, wt.b.y, wt.type, w0.val, 
                       sigma.rwdx = 1, sigma.rwd = 1, 
                       sigma.rctx = 1, sigma.rct = 1, rho.rwd = 0.3, 
-                      model.type, bias.type, bn.type, outcome.type, seed, rep) {
-  # syn.nset: number of generate synthetic datasets
-  # prior.var0: sigma0^2 value for the non-informative part in the mixture prior
+                      model.type, bias.type, Gphi.type, outcome.type, seed, rep) {
+  # var0.ess: sigma0^2 ESS value for the non-informative part in the mixture prior
 
   ### Data generating
   tmp.data <- prepare.data(
     rwd.n = rwd.n, exp.n = exp.n, EHR.n = EHR.n, 
     trt.eff = trt.eff, bias.c = bias.c,
-    syn.nset = syn.nset, scenario = scenario, 
+    scenario = scenario, 
     sigma.rwdx = sigma.rwdx, sigma.rwd = sigma.rwd, 
     sigma.rctx = sigma.rctx, sigma.rct = sigma.rct, rho.rwd = rho.rwd,
     model.type = model.type, bias.type = bias.type, outcome.type = outcome.type, 
@@ -847,10 +666,8 @@ MAIN.func <- function(rwd.n, exp.n, EHR.n, synctrl.n, trt.eff, bias.c, syn.nset,
     EHR.data = tmp.data$EHR.data, 
     RCT.data = tmp.data$RCT.data, 
     synctrl.n = synctrl.n, 
-    syn.nset = syn.nset, 
-    trt.eff = trt.eff, 
     seed = seed, 
-    bn.type = bn.type
+    Gphi.type = Gphi.type
   )
   ### MAP
   res.s2 <- MAP.func(
@@ -858,19 +675,20 @@ MAIN.func <- function(rwd.n, exp.n, EHR.n, synctrl.n, trt.eff, bias.c, syn.nset,
     RCT.data = tmp.data$RCT.data,
     true.ctrl.s1 = true.ctrl.s1, 
     exp.all = exp.all, 
-    trueRCT = tmp.data$trueRCT, 
-    prior.var0 = prior.var0,
-    prior.shrinkage = prior.shrinkage,
+    var0.ess = var0.ess,
     wt.rho.x = wt.rho.x, 
     wt.b.x = wt.b.x, 
     wt.rho.y = wt.rho.y, 
     wt.b.y = wt.b.y, 
     wt.type = wt.type, 
-    bn.pval = res.s1$bn.pval, 
-    DC.groups = res.s1$DC.groups,
+    w0.val = w0.val, 
+    RCT.data.trans = res.s1$RCT.data.trans, 
+    Gphi.model = res.s1$Gphi.model, 
+    DC.groups = res.s1$Gphi.ctrl2,
     y.pred.dt = res.s1$y.pred.dt, 
     y.pred.syn1 = res.s1$y.pred.syn1, 
-    methods = c("full", "selected")[1]
+    methods = c("full", "selected")[1],
+    seed = seed
   )
 
   output <- list(
@@ -880,3 +698,4 @@ MAIN.func <- function(rwd.n, exp.n, EHR.n, synctrl.n, trt.eff, bias.c, syn.nset,
 
   return(output)
 }
+

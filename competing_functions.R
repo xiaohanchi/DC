@@ -196,11 +196,47 @@ ATE.pssam <- function(ps.data, ctrl.data, exp.data, sigma = NULL, eff.size, outc
   n_samp <- 20000
   ctrl_samp <- rmix(post_SAM, n_samp)
   trt_samp <- rmix(post_trt, n_samp)
+
+  results <- list(
+    Prob = 2 * min(mean((trt_samp - ctrl_samp) < 0), mean((trt_samp - ctrl_samp) > 0)), 
+    ATE = mean(trt_samp) - mean(ctrl_samp)
+  )
+  return(results)
   
+}
+
+ATE.pssam.cf <- function(ps.data, ctrl.data.valid, ctrl.data.est, exp.data, sigma = NULL, eff.size, outcome.type){
+  ps.data <- data.frame(ps.data)
+  prior1 <- PS_prior(
+    formula = paste0("label ~ ", paste(names(ps.data)[grep("X", names(ps.data))], collapse = "+")),
+    data = ps.data, ps.method = 'Matching', method = 'nearest', 
+    outcome = 'Y', study = 'label', treat = 'arm'
+  )
   
-  ATE <- mean(trt_samp) - mean(ctrl_samp)
-  prob <- 2 * min(mean((trt_samp - ctrl_samp) < 0), mean((trt_samp - ctrl_samp) > 0))
-  return(list(ATE = ATE, Prob = prob))
+  wSAM <- SAM_weight(
+    if.prior = prior1,
+    delta = eff.size,    ## Clinically significant difference
+    data = ctrl.data.valid$Y     ## Control arm data
+  )
+  if(outcome.type == 1) {
+    nf.prior <- mixnorm(nf.prior = c(1, 0, sigma), sigma = sigma)
+  } else if (outcome.type == 2) {
+    nf.prior <- mixbeta(nf.prior = c(1, 1, 1))
+  }
+  
+  SAM.prior <- SAM_prior(if.prior = prior1, nf.prior = nf.prior, weight = wSAM)
+  
+  post_SAM <- postmix(priormix = SAM.prior, data = ctrl.data.est$Y)
+  post_trt <- postmix(priormix = nf.prior, data = exp.data$Y)
+  n_samp <- 20000
+  ctrl_samp <- rmix(post_SAM, n_samp)
+  trt_samp <- rmix(post_trt, n_samp)
+  
+  results <- list(
+    ATE.mcmc = (trt_samp - ctrl_samp)
+  )
+  return(results)
+  
 }
 
 

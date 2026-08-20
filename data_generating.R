@@ -295,7 +295,7 @@ generate.rwd <- function(N, trt.eff, bias.c, scenario,
       Y.sd[c(1, 4:7, 11, 13, 16, 17, 20, 22, 25, 27, 29:30)] <- 1 * sigma.rwd
       Y.sd[c(2, 14)] <- 1.5 * sigma.rwd
       Y.sd[c(3, 8, 9, 10, 12, 15, 18, 19, 21, 26, 28)] <- 2 * sigma.rwd
-      Y.sd[c(23, 24)] <- 2.5 * sigma.rwd
+      Y.sd[c(23, 24)] <- 5 * sigma.rwd
       data <- covar %>% mutate(Y = rnorm(
         n = N, mean = y.mean, sd = Y.sd[scenario]
       ))
@@ -410,8 +410,8 @@ generate.rwd <- function(N, trt.eff, bias.c, scenario,
       Y.sd[c(1, 4:7, 11, 13, 16, 17, 20, 22, 25, 27, 29:30)] <- 1 * sigma.rwd
       Y.sd[c(2, 14)] <- 1.5 * sigma.rwd
       Y.sd[c(3, 8, 9, 10, 12, 15, 18, 19, 21, 26, 28)] <- 2 * sigma.rwd
-      Y.sd[c(26, 28)] <- 2.5 * sigma.rwd
-      Y.sd[c(23, 24)] <- 2.5 * sigma.rwd
+      Y.sd[c(26, 28)] <- 5 * sigma.rwd
+      Y.sd[c(23, 24)] <- 5 * sigma.rwd
       data <- covar %>% mutate(Y = rnorm(
         n = N, mean = y.mean, sd = Y.sd[scenario]
       )) %>% select(-c(X1, X2, X4, X5))
@@ -582,8 +582,8 @@ generate.rwd <- function(N, trt.eff, bias.c, scenario,
     
     Y.sd <- c()
     Y.sd[c(22, 25, 27, 29:30)] <- 1 * sigma.rwd
-    Y.sd[c(26, 28)] <- 2 * sigma.rwd
-    Y.sd[c(23, 24)] <- 2.5 * sigma.rwd
+    Y.sd[c(26, 28)] <- 5 * sigma.rwd
+    Y.sd[c(23, 24)] <- 5 * sigma.rwd
     data <- covar %>% mutate(Y = rnorm(
       n = N, mean = y.mean, sd = Y.sd[scenario]
     )) %>% select(-c(X1, X2, X4, X5))
@@ -954,7 +954,7 @@ generate.RCT <- function(N, ratio, trt.eff, scenario,
   return(data)
 }
 
-prepare.data <- function(rwd.n, exp.n, EHR.n, trt.eff, bias.c, syn.nset, scenario, 
+prepare.data <- function(rwd.n, exp.n, EHR.n, trt.eff, bias.c, scenario, 
                          sigma.rwdx = 1, sigma.rwd = 1, sigma.rctx = 1, sigma.rct = 1, 
                          rho.rwd = 0.3, model.type, bias.type, outcome.type, seed) {
   total.sc <- 30
@@ -968,41 +968,19 @@ prepare.data <- function(rwd.n, exp.n, EHR.n, trt.eff, bias.c, syn.nset, scenari
   set.seed(seed + 2333)
   EHR.data <- generate.RCT(
     N = EHR.n, ratio = 0.5, trt.eff = trt.eff, scenario = scenario, 
-    x.sd = sigma.rctx, sd = sigma.rct, rho = 0.3, 
+    x.sd = sigma.rctx, sd = sigma.rct, rho = ifelse(rho.rwd == 0.3, rho.rwd, -rho.rwd), #20260214
     model.type = model.type, outcome.type = outcome.type
   ) 
   # RCT: a random subset from EHR?
   set.seed(seed + 6666)
   curr.data <- EHR.data %>% group_by(treatment) %>% 
     slice_sample(n = exp.n, replace = FALSE) %>% ungroup()
-  # curr.data <- generate.RCT(
-  #   N = (2 * exp.n), ratio = 0.5, trt.eff = trt.eff, scenario = scenario, 
-  #   x.sd = sigma.rctx, sd = sigma.rct, model.type = model.type
-  # )
   true.ctrl.idx <- sample(which(curr.data$treatment == 0), size = (exp.n / 2), replace = FALSE)
   true.ctrl.s1 <- curr.data[true.ctrl.idx, ]
   exp.all <- curr.data %>% filter(treatment == 1)
   exp.all <- dplyr::select(exp.all, -c(S, treatment))
   true.ctrl.s1 <- dplyr::select(true.ctrl.s1, -c(S, treatment))
   curr.data <- curr.data[-true.ctrl.idx, ]
-  
-  ### true control from RCT 
-  trueRCT <- list()
-  for (ii in 1:syn.nset) {
-    set.seed(seed + 10 * ii)
-    ### generate true RCT for MAP
-    trueRCT[[ii]] <- generate.RCT(
-      N = (exp.n / 2), ratio = 0, trt.eff = trt.eff, scenario = scenario, 
-      x.sd = sigma.rctx, sd = sigma.rct, 
-      model.type = model.type, outcome.type = outcome.type
-    ) %>% select(-c(treatment, S))
-    
-    if ((scenario %% total.sc) %in% c(1:12)) {
-      trueRCT[[ii]] <- safe_factor(data = trueRCT[[ii]], col_names = c("X5", "X6", "X7"))
-    } else if ((scenario %% total.sc) %in% c(22:29, 0)) {
-      trueRCT[[ii]] <- safe_factor(data = trueRCT[[ii]], col_names = c("X6", "X7"))
-    }
-  }
   
   if ((scenario %% total.sc) %in% c(1:12)) {
     rwd.data.raw <- safe_factor(data = rwd.data.raw, col_names = c("X5", "X6", "X7"))
@@ -1022,8 +1000,7 @@ prepare.data <- function(rwd.n, exp.n, EHR.n, trt.eff, bias.c, syn.nset, scenari
     exp.all = exp.all,
     true.ctrl.s1 = true.ctrl.s1,
     EHR.data = EHR.data, 
-    RCT.data = curr.data,
-    trueRCT = trueRCT
+    RCT.data = curr.data
   )
 }
 
