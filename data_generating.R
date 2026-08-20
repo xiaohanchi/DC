@@ -295,7 +295,7 @@ generate.rwd <- function(N, trt.eff, bias.c, scenario,
       Y.sd[c(1, 4:7, 11, 13, 16, 17, 20, 22, 25, 27, 29:30)] <- 1 * sigma.rwd
       Y.sd[c(2, 14)] <- 1.5 * sigma.rwd
       Y.sd[c(3, 8, 9, 10, 12, 15, 18, 19, 21, 26, 28)] <- 2 * sigma.rwd
-      Y.sd[c(23, 24)] <- 5 * sigma.rwd
+      Y.sd[c(23, 24)] <- 2.5 * sigma.rwd
       data <- covar %>% mutate(Y = rnorm(
         n = N, mean = y.mean, sd = Y.sd[scenario]
       ))
@@ -410,8 +410,8 @@ generate.rwd <- function(N, trt.eff, bias.c, scenario,
       Y.sd[c(1, 4:7, 11, 13, 16, 17, 20, 22, 25, 27, 29:30)] <- 1 * sigma.rwd
       Y.sd[c(2, 14)] <- 1.5 * sigma.rwd
       Y.sd[c(3, 8, 9, 10, 12, 15, 18, 19, 21, 26, 28)] <- 2 * sigma.rwd
-      Y.sd[c(26, 28)] <- 5 * sigma.rwd
-      Y.sd[c(23, 24)] <- 5 * sigma.rwd
+      Y.sd[c(26, 28)] <- 2.5 * sigma.rwd
+      Y.sd[c(23, 24)] <- 2.5 * sigma.rwd
       data <- covar %>% mutate(Y = rnorm(
         n = N, mean = y.mean, sd = Y.sd[scenario]
       )) %>% select(-c(X1, X2, X4, X5))
@@ -582,8 +582,8 @@ generate.rwd <- function(N, trt.eff, bias.c, scenario,
     
     Y.sd <- c()
     Y.sd[c(22, 25, 27, 29:30)] <- 1 * sigma.rwd
-    Y.sd[c(26, 28)] <- 5 * sigma.rwd
-    Y.sd[c(23, 24)] <- 5 * sigma.rwd
+    Y.sd[c(26, 28)] <- 2 * sigma.rwd
+    Y.sd[c(23, 24)] <- 2.5 * sigma.rwd
     data <- covar %>% mutate(Y = rnorm(
       n = N, mean = y.mean, sd = Y.sd[scenario]
     )) %>% select(-c(X1, X2, X4, X5))
@@ -968,13 +968,17 @@ prepare.data <- function(rwd.n, exp.n, EHR.n, trt.eff, bias.c, syn.nset, scenari
   set.seed(seed + 2333)
   EHR.data <- generate.RCT(
     N = EHR.n, ratio = 0.5, trt.eff = trt.eff, scenario = scenario, 
-    x.sd = sigma.rctx, sd = sigma.rct, rho = ifelse(rho.rwd == 0.3, rho.rwd, -rho.rwd), #20260214
+    x.sd = sigma.rctx, sd = sigma.rct, rho = 0.3, 
     model.type = model.type, outcome.type = outcome.type
   ) 
   # RCT: a random subset from EHR?
   set.seed(seed + 6666)
   curr.data <- EHR.data %>% group_by(treatment) %>% 
     slice_sample(n = exp.n, replace = FALSE) %>% ungroup()
+  # curr.data <- generate.RCT(
+  #   N = (2 * exp.n), ratio = 0.5, trt.eff = trt.eff, scenario = scenario, 
+  #   x.sd = sigma.rctx, sd = sigma.rct, model.type = model.type
+  # )
   true.ctrl.idx <- sample(which(curr.data$treatment == 0), size = (exp.n / 2), replace = FALSE)
   true.ctrl.s1 <- curr.data[true.ctrl.idx, ]
   exp.all <- curr.data %>% filter(treatment == 1)
