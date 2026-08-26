@@ -1,4 +1,3 @@
-logit <- function(p) log(p / (1 - p))
 expit <- function(x) exp(x) / (1 + exp(x))
 
 safe_factor <- function(data, col_names){
@@ -954,7 +953,7 @@ generate.RCT <- function(N, ratio, trt.eff, scenario,
   return(data)
 }
 
-prepare.data <- function(rwd.n, exp.n, EHR.n, trt.eff, bias.c, scenario, 
+prepare.data <- function(rwd.n, exp.n, EHR.n, trt.eff, bias.c, syn.nset, scenario, 
                          sigma.rwdx = 1, sigma.rwd = 1, sigma.rctx = 1, sigma.rct = 1, 
                          rho.rwd = 0.3, model.type, bias.type, outcome.type, seed) {
   total.sc <- 30
@@ -982,6 +981,24 @@ prepare.data <- function(rwd.n, exp.n, EHR.n, trt.eff, bias.c, scenario,
   true.ctrl.s1 <- dplyr::select(true.ctrl.s1, -c(S, treatment))
   curr.data <- curr.data[-true.ctrl.idx, ]
   
+  ### true control from RCT 
+  trueRCT <- list()
+  for (ii in 1:syn.nset) {
+    set.seed(seed + 10 * ii)
+    ### generate true RCT for MAP
+    trueRCT[[ii]] <- generate.RCT(
+      N = (exp.n / 2), ratio = 0, trt.eff = trt.eff, scenario = scenario, 
+      x.sd = sigma.rctx, sd = sigma.rct, 
+      model.type = model.type, outcome.type = outcome.type
+    ) %>% select(-c(treatment, S))
+    
+    if ((scenario %% total.sc) %in% c(1:12)) {
+      trueRCT[[ii]] <- safe_factor(data = trueRCT[[ii]], col_names = c("X5", "X6", "X7"))
+    } else if ((scenario %% total.sc) %in% c(22:29, 0)) {
+      trueRCT[[ii]] <- safe_factor(data = trueRCT[[ii]], col_names = c("X6", "X7"))
+    }
+  }
+  
   if ((scenario %% total.sc) %in% c(1:12)) {
     rwd.data.raw <- safe_factor(data = rwd.data.raw, col_names = c("X5", "X6", "X7"))
     exp.all <- safe_factor(data = exp.all, col_names = c("X5", "X6", "X7"))
@@ -1000,7 +1017,8 @@ prepare.data <- function(rwd.n, exp.n, EHR.n, trt.eff, bias.c, scenario,
     exp.all = exp.all,
     true.ctrl.s1 = true.ctrl.s1,
     EHR.data = EHR.data, 
-    RCT.data = curr.data
+    RCT.data = curr.data,
+    trueRCT = trueRCT
   )
 }
 

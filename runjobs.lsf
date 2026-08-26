@@ -1,13 +1,13 @@
 #!/bin/bash
-#BSUB -J "main_idx00[1-2500]"
+#BSUB -J "RWDbias_idx00[1-1250]"
 #BSUB -W 3:00
 #BSUB -o /rsrch4/scratch/biostatistics/xchi/syn_data/%J_%I.out
 #BSUB -e /rsrch4/scratch/biostatistics/xchi/syn_data/%J_%I.err
-#BSUB -cwd /rsrch4/home/biostatistics/xchi/DCTwin/experiment/main_continuous/folder00
+#BSUB -cwd /rsrch4/home/biostatistics/xchi/digital_control/experiments/2026-0826/RWDbias_continuous/folder00
 #BSUB -q short 
 #BSUB -n 1 
-#BSUB -M 8
-#BSUB -R rusage[mem=8]
+#BSUB -M 5
+#BSUB -R rusage[mem=5]
 # #BSUB -N
 # #BSUB -u xchi@mdanderson.org
 
