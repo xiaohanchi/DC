@@ -748,7 +748,7 @@ MAIN.func <- function(rwd.n, exp.n, EHR.n, synctrl.n, trt.eff, bias.c, syn.nset,
     g.model.fit = res.s1$g.model.fit, 
     y.pred.dt = res.s1$y.pred.dt, 
     y.pred.syn1 = res.s1$y.pred.syn1, 
-    methods = "selected",
+    methods = c("full", "selected")[1],
     seed = seed
   )
 
